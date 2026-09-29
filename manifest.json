@@ -1,0 +1,22 @@
+{
+  "name": "BudgetBasen",
+  "short_name": "BudgetBasen",
+  "description": "Familiens budget, likviditet, kvitteringer og kontrakter.",
+  "lang": "da",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1020",
+  "theme_color": "#0b1020",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "shortcuts": [
+    { "name": "Scan kvittering", "url": "./#receipts" },
+    { "name": "Likviditet", "url": "./#cashflow" }
+  ]
+}

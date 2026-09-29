@@ -1,0 +1,161 @@
+rules_version = '2';
+
+// =====================================================================
+//  BudgetBasen — Firestore Security Rules
+//  Princip: ALT data ligger under /budgets/{budgetId}/..., og adgang
+//  afgøres af budget-dokumentets "members"-map: { uid: 'admin'|'edit'|'read' }.
+//  En bruger kan aldrig læse eller skrive i et budget, hun ikke er medlem af.
+// =====================================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- Hjælpefunktioner ----------
+    function signedIn() { return request.auth != null; }
+    function myEmail() { return request.auth.token.email.lower(); }
+    function verifiedEmail() { return signedIn() && request.auth.token.email != null && request.auth.token.email_verified == true; }
+
+    function budgetDoc(bid) { return get(/databases/$(database)/documents/budgets/$(bid)).data; }
+    function roleIn(bid) { return budgetDoc(bid).members.get(request.auth.uid, ''); }
+    function canRead(bid) { return signedIn() && roleIn(bid) in ['admin', 'edit', 'read']; }
+    function canEdit(bid) { return signedIn() && roleIn(bid) in ['admin', 'edit']; }
+    function isAdmin(bid) { return signedIn() && roleIn(bid) == 'admin'; }
+    function isOwner(bid) { return signedIn() && budgetDoc(bid).ownerUid == request.auth.uid; }
+
+    // ---------- Brugerprofil: kun dig selv ----------
+    match /users/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // ---------- Budgetter ----------
+    match /budgets/{bid} {
+      // Læs: kun medlemmer (listen i appen hentes med memberUids array-contains uid)
+      allow read: if signedIn() && request.auth.uid in resource.data.memberUids;
+
+      // Opret: du bliver automatisk ejer og ENESTE medlem
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.members.keys().hasOnly([request.auth.uid])
+        && request.resource.data.members[request.auth.uid] == 'admin'
+        && request.resource.data.memberUids == [request.auth.uid]
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 100;
+
+      allow update: if adminUpdate() || editorUpdate() || acceptInvite(bid) || leaveBudget();
+
+      // Kun ejeren kan slette hele budgettet
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+
+      function myRole() { return resource.data.members.get(request.auth.uid, ''); }
+      function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+      // Admin må ændre alt — men ejeren kan aldrig fjernes/degraderes, ejerskab kan ikke flyttes,
+      // og members/memberUids skal altid stemme overens.
+      function adminUpdate() {
+        return signedIn() && myRole() == 'admin'
+          && request.resource.data.ownerUid == resource.data.ownerUid
+          && request.resource.data.members.get(resource.data.ownerUid, '') == 'admin'
+          && request.resource.data.members.values().hasOnly(['admin', 'edit', 'read'])
+          && request.resource.data.members.keys().toSet() == request.resource.data.memberUids.toSet();
+      }
+
+      // Redaktør må kun opdatere saldo/indstillinger og tilføje værdier til lister
+      function editorUpdate() {
+        return signedIn() && myRole() == 'edit'
+          && changed().hasOnly(['settings', 'lists', 'updatedAt']);
+      }
+
+      // En inviteret bruger må tilføje SIG SELV med præcis den rolle, invitationen angiver
+      function acceptInvite(bid) {
+        let invPath = /databases/$(database)/documents/invites/$(bid + '_' + myEmail());
+        return verifiedEmail()
+          && !(request.auth.uid in resource.data.memberUids)
+          && exists(invPath)
+          && changed().hasOnly(['members', 'memberUids', 'memberInfo'])
+          && request.resource.data.members.diff(resource.data.members).affectedKeys().hasOnly([request.auth.uid])
+          && request.resource.data.members[request.auth.uid] == get(invPath).data.role
+          && request.resource.data.memberUids.toSet() == resource.data.memberUids.toSet().union([request.auth.uid].toSet())
+          && request.resource.data.memberInfo.diff(resource.data.memberInfo).affectedKeys().hasOnly([request.auth.uid]);
+      }
+
+      // Et medlem (ikke ejeren) må forlade budgettet
+      function leaveBudget() {
+        return signedIn()
+          && request.auth.uid != resource.data.ownerUid
+          && request.auth.uid in resource.data.memberUids
+          && changed().hasOnly(['members', 'memberUids', 'memberInfo'])
+          && !(request.auth.uid in request.resource.data.members)
+          && request.resource.data.memberUids.toSet() == resource.data.memberUids.toSet().difference([request.auth.uid].toSet())
+          && request.resource.data.members.diff(resource.data.members).affectedKeys().hasOnly([request.auth.uid]);
+      }
+
+      // ----- Budgetposter -----
+      match /items/{itemId} {
+        allow read: if canRead(bid);
+        allow create, update: if canEdit(bid) && validItem(request.resource.data);
+        allow delete: if canEdit(bid);
+      }
+      function validItem(d) {
+        return d.type in ['expense', 'income']
+          && d.name is string && d.name.size() > 0 && d.name.size() <= 120
+          && d.amount is number && d.amount >= 0 && d.amount < 100000000
+          && d.freq is int && d.freq >= 1 && d.freq <= 120
+          && d.payDay is int && d.payDay >= 1 && d.payDay <= 31;
+      }
+
+      // ----- Kvitteringer og dokumenter (selve filerne ligger i Cloudflare KV) -----
+      match /receipts/{id} {
+        allow read: if canRead(bid);
+        allow write: if canEdit(bid);
+      }
+      match /documents/{id} {
+        allow read: if canRead(bid);
+        allow write: if canEdit(bid);
+      }
+
+      // ----- Versioner til sammenligning -----
+      match /snapshots/{id} {
+        allow read: if canRead(bid);
+        allow create, update: if canEdit(bid);
+        allow delete: if isAdmin(bid);
+      }
+
+      // ----- Log: alle medlemmer kan skrive i eget navn, INGEN kan rette i den -----
+      match /log/{id} {
+        allow read: if canRead(bid);
+        allow create: if canRead(bid) && request.resource.data.uid == request.auth.uid;
+        allow update: if false;
+        allow delete: if isOwner(bid); // kun når ejeren sletter hele budgettet
+      }
+    }
+
+    // ---------- Invitationer ----------
+    // Dokument-id = "{budgetId}_{email}" — så reglerne kan slå invitationen op direkte.
+    match /invites/{inviteId} {
+      allow read: if verifiedEmail() && resource.data.email == myEmail()
+                  || signedIn() && isAdmin(resource.data.budgetId);
+      allow create, update: if isAdmin(request.resource.data.budgetId)
+        && inviteId == request.resource.data.budgetId + '_' + request.resource.data.email
+        && request.resource.data.email == request.resource.data.email.lower()
+        && request.resource.data.role in ['admin', 'edit', 'read'];
+      allow delete: if verifiedEmail() && resource.data.email == myEmail()
+                    || signedIn() && isAdmin(resource.data.budgetId);
+    }
+
+    // ---------- Read-only links (f.eks. til banken) ----------
+    // Alle med det lange, tilfældige link kan LÆSE ét dokument — men ingen kan liste/søge i dem.
+    match /shares/{token} {
+      allow get: if resource.data.expiresAt == null || request.time < resource.data.expiresAt;
+      allow list: if false;
+      allow create: if isAdmin(request.resource.data.budgetId)
+        && request.resource.data.createdBy == request.auth.uid
+        && token.size() >= 20;
+      allow delete: if isAdmin(resource.data.budgetId);
+      allow update: if false;
+    }
+
+    // Alt andet: nej.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
