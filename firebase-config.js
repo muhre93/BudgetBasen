@@ -14,9 +14,9 @@ export const firebaseConfig = {
   apiKey: "AIzaSyCjsIX-Ilza2nt5rJRfbsEmKSJZ6xZ0Vxc",
   authDomain: "budgetbasen.firebaseapp.com",
   projectId: "budgetbasen",
-  storageBucket: "budgetbasen.firebasestorage.app", // bruges ikke — filer ligger i Cloudflare
+  storageBucket: "budgetbasen.firebasestorage.app",
   messagingSenderId: "317548889590",
-  appId: "1:317548889590:web:990d353e8dbc0dbbedf3d7",
+  appId: "1:317548889590:web:990d353e8dbc0dbbedf3d7"
 };
 
 // Adressen på din Cloudflare Worker, som gemmer kvitteringer og kontrakter i Workers KV
