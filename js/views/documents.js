@@ -1,9 +1,9 @@
 // Dokumenter & kontrakter: forsikringspolicer, lejekontrakter, abonnementer — med udløbs- og opsigelsesfrister.
-import { state, canEdit, lists } from '../state.js';
+import { state, canEdit, lists, isShared, visibilityLabel, defaultVisibleTo } from '../state.js';
 import { esc, kr, fmtDate, openModal, confirmDialog, toast, parseAmount, numToInput, toDate } from '../ui.js';
 import { watch, saveRecord, deleteRecord } from '../data.js';
 import { uploadFile, openFile, removeFile, fileSize } from '../files.js';
-import { listSelect, filterSelect, bindListSelects } from '../forms.js';
+import { listSelect, filterSelect, bindListSelects, visibilityPicker, bindVisibility, readVisibility } from '../forms.js';
 import { exportButtons, bindExportButtons, documentsToPdf, documentsToExcel } from '../export.js';
 
 const ui = { q: '', type: '' };
@@ -33,47 +33,64 @@ function status(d, today = new Date()) {
 
 export function render(root) {
   watch('documents');
-  const all = state.col.documents;
-  const q = ui.q.trim().toLowerCase();
-  const list = (all || []).filter((d) => (!ui.type || d.docType === ui.type)
-    && (!q || [d.title, d.supplier, d.reference, d.note, d.docType].some((f) => String(f || '').toLowerCase().includes(q))));
-  const upcoming = (all || []).map((d) => ({ d, s: status(d) })).filter((x) => x.s && x.s.cls !== 'ok' && x.s.days > -30).sort((a, b) => a.s.days - b.s.days);
-  const yearly = (all || []).reduce((s, d) => s + (Number(d.yearlyPrice) || 0), 0);
+  const L = lists();
+  const key = `documents:${state.budgetId}:${canEdit()}:${JSON.stringify(L.docTypes)}`;
+  if (root.dataset.shell !== key) {
+    root.dataset.shell = key;
+    root.innerHTML = `<div class="view-wrap">
+      <section class="toolbar glass">
+        <div class="toolbar-row">
+          <input id="dc-q" type="search" placeholder="Søg i dokumenter…" value="${esc(ui.q)}" enterkeyhint="search" autocomplete="off">
+          ${filterSelect('dc-type', 'docTypes', ui.type, 'Alle typer')}
+          ${canEdit() ? '<button class="btn primary" id="dc-add" type="button">＋ Nyt dokument</button>' : ''}
+        </div>
+      </section>
+      <div id="dc-results"></div></div>`;
+    const w = root.firstElementChild;
+    const qi = w.querySelector('#dc-q');
+    qi.addEventListener('input', () => { ui.q = qi.value; update(root); });
+    qi.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); qi.blur(); } });
+    w.querySelector('#dc-type').onchange = (e) => { ui.type = e.target.value; update(root); };
+    w.querySelector('#dc-add')?.addEventListener('click', () => openDocModal());
+    w.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-doc]');
+      if (!el) return;
+      e.preventDefault();
+      openDocModal((state.col.documents || []).find((d) => d.id === el.dataset.doc));
+    });
+  }
+  update(root);
+}
 
+function update(root) {
+  const all = state.col.documents;
+  const out = root.querySelector('#dc-results');
+  if (!all) { out.innerHTML = '<div class="skeleton"></div>'; return; }
+  const q = ui.q.trim().toLowerCase();
+  const list = all.filter((d) => (!ui.type || d.docType === ui.type)
+    && (!q || [d.title, d.supplier, d.reference, d.note, d.docType].some((f) => String(f || '').toLowerCase().includes(q))));
+  const upcoming = all.map((d) => ({ d, s: status(d) })).filter((x) => x.s && x.s.cls !== 'ok' && x.s.days > -30).sort((a, b) => a.s.days - b.s.days);
+  const yearly = list.reduce((s, d) => s + (Number(d.yearlyPrice) || 0), 0);
   const groups = new Map();
   for (const d of list) { const t = d.docType || 'Andet'; if (!groups.has(t)) groups.set(t, []); groups.get(t).push(d); }
 
-  root.innerHTML = `
-    <section class="toolbar glass">
-      <div class="toolbar-row">
-        <input id="dc-q" type="search" placeholder="Søg i dokumenter…" value="${esc(ui.q)}">
-        ${filterSelect('dc-type', 'docTypes', ui.type, 'Alle typer')}
-        <span class="spacer"></span>
-        ${list.length ? exportButtons('dc-exp') : ''}
-        ${canEdit() ? '<button class="btn primary" id="dc-add">＋ Nyt dokument</button>' : ''}
-      </div>
-    </section>
-
-    ${upcoming.length ? `<section class="alert warn glass"><b>Frister der kræver opmærksomhed</b>
+  out.innerHTML = `
+    ${upcoming.length ? `<section class="alert warn glass"><b>⏰ Frister du skal huske</b>
       <ul class="plain">${upcoming.map(({ d, s }) => `<li><a href="#" data-doc="${d.id}">${esc(d.title)}</a> — ${esc(s.text)}</li>`).join('')}</ul></section>` : ''}
-
-    ${!all ? '<div class="skeleton"></div>' : !all.length ? `<div class="empty glass"><div class="empty-emoji">📁</div><h3>Ingen dokumenter endnu</h3>
-      <p>Saml forsikringspolicer, lejekontrakter, abonnementer og garantibeviser her — adskilt fra de daglige kvitteringer. Appen holder øje med opsigelsesfristerne for dig.</p></div>`
-    : `<p class="result-line">${all.length} dokumenter · samlet årlig pris <b>${kr(yearly)}</b></p>
-      ${[...groups.entries()].sort((a, b) => a[0].localeCompare(b[0], 'da')).map(([t, docs]) => `
+    ${!all.length ? `<div class="empty glass"><div class="empty-emoji">📁</div><h3>Ingen dokumenter endnu</h3>
+      <p>Saml forsikringspolicer, lejekontrakter, abonnementer og garantibeviser her — adskilt fra de daglige kvitteringer. Appen holder øje med, hvornår de skal opsiges.</p></div>`
+    : `<div class="result-bar"><p class="result-line">${list.length} dokumenter · koster i alt <b>${kr(yearly)}</b> om året</p>${list.length ? exportButtons('dc-exp') : ''}</div>
+      ${list.length ? [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0], 'da')).map(([t, docs]) => `
         <details class="group glass" open>
           <summary><span class="chev"></span><span class="g-name">${esc(t)}</span><span class="g-count">${docs.length}</span></summary>
           <div class="doc-list">${docs.sort((a, b) => String(a.title).localeCompare(String(b.title), 'da')).map(docCard).join('')}</div>
-        </details>`).join('')}`}
-  `;
+        </details>`).join('') : '<div class="empty glass small"><p>Ingen dokumenter passer til søgningen.</p></div>'}`}`;
 
-  const qi = root.querySelector('#dc-q');
-  qi.oninput = () => { ui.q = qi.value; render(root); };
-  root.querySelector('#dc-type').onchange = (e) => { ui.type = e.target.value; render(root); };
   const itemName = (id) => state.items.find((i) => i.id === id)?.name || '';
-  bindExportButtons(root, 'dc-exp', { pdf: () => documentsToPdf(list, noticeDeadline, state.budget.name), xlsx: () => documentsToExcel(list, noticeDeadline, itemName, state.budget.name) });
-  root.querySelector('#dc-add')?.addEventListener('click', () => openDocModal());
-  root.querySelectorAll('[data-doc]').forEach((el) => (el.onclick = (e) => { e.preventDefault(); openDocModal(all.find((d) => d.id === el.dataset.doc)); }));
+  bindExportButtons(out, 'dc-exp', {
+    what: `Oversigt over ${list.length} dokumenter med udløb, opsigelsesfrister og pris.`,
+    pdf: () => documentsToPdf(list, noticeDeadline, state.budget.name), xlsx: () => documentsToExcel(list, noticeDeadline, itemName, state.budget.name),
+  });
 }
 
 function docCard(d) {
@@ -82,7 +99,7 @@ function docCard(d) {
   return `<button class="doc-card" data-doc="${d.id}">
     <div class="doc-icon">${(d.files || []).length ? '📎' : '📄'}</div>
     <div class="doc-main">
-      <b>${esc(d.title)}</b>
+      <b>${esc(d.title)}${!isShared(d) ? ` <span class="vis-tag">🔒 ${esc(visibilityLabel(d))}</span>` : ''}</b>
       <div class="muted small">${[d.supplier, d.reference && `Nr. ${d.reference}`, linked && `↔ ${linked.name}`].filter(Boolean).map(esc).join(' · ')}</div>
       ${s ? `<span class="chip ${s.cls}">${esc(s.text)}</span>` : ''}
     </div>
@@ -93,7 +110,7 @@ function docCard(d) {
 export function openDocModal(rec = null) {
   const editing = !!rec;
   const readOnly = !canEdit();
-  const d = rec || { docType: '', files: [] };
+  const d = rec || { docType: '', files: [], visibleTo: defaultVisibleTo() };
   let files = [...(d.files || [])];
   const removed = [];
   const expenseItems = state.items.filter((i) => i.type === 'expense').sort((a, b) => a.name.localeCompare(b.name, 'da'));
@@ -121,6 +138,7 @@ export function openDocModal(rec = null) {
       <select name="linkedItemId"><option value="">— Ingen —</option>${expenseItems.map((i) => `<option value="${i.id}" ${i.id === d.linkedItemId ? 'selected' : ''}>${esc(i.name)}</option>`).join('')}</select>
     </label>
     <label>Noter (dækning, selvrisiko, kontaktperson …)<textarea name="note" rows="3" maxlength="2000">${esc(d.note)}</textarea></label>
+    ${visibilityPicker(d)}
     <div class="files-box">
       <b>Filer</b>
       <ul class="file-list" id="doc-files">${filesHtml()}</ul>
@@ -137,6 +155,7 @@ export function openDocModal(rec = null) {
     submitLabel: editing ? 'Gem' : 'Opret dokument',
     onOpen: (form) => {
       bindListSelects(form);
+      bindVisibility(form);
       const ul = form.querySelector('#doc-files');
       ul.addEventListener('click', (e) => {
         const o = e.target.closest('[data-open]'); const r = e.target.closest('[data-rm]');
@@ -160,7 +179,7 @@ export function openDocModal(rec = null) {
         reference: String(fd.get('reference') || '').trim(), yearlyPrice: price,
         startDate: fd.get('startDate') || null, expiryDate: fd.get('expiryDate') || null,
         noticeMonths: fd.get('noticeMonths') === '' ? null : Number(fd.get('noticeMonths')),
-        linkedItemId: fd.get('linkedItemId') || null, note: String(fd.get('note') || '').trim(), files,
+        linkedItemId: fd.get('linkedItemId') || null, note: String(fd.get('note') || '').trim(), files, visibleTo: readVisibility(form),
       };
       await saveRecord('documents', rec?.id || null, data, rec);
       toast(editing ? 'Dokument gemt' : 'Dokument oprettet');

@@ -186,13 +186,30 @@ export async function runExport(btn, fn) {
   finally { if (btn) { btn.disabled = false; btn.textContent = label; } }
 }
 
-export const exportButtons = (id) => `<span class="export-btns" id="${id}">
-  <button type="button" class="btn small ghost" data-exp="pdf" title="Download som PDF"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>PDF</button>
-  <button type="button" class="btn small ghost" data-exp="xlsx" title="Download som Excel"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>Excel</button>
-</span>`;
-export function bindExportButtons(root, id, { pdf, xlsx }) {
-  root.querySelector(`#${id} [data-exp=pdf]`)?.addEventListener('click', (e) => runExport(e.currentTarget, pdf));
-  root.querySelector(`#${id} [data-exp=xlsx]`)?.addEventListener('click', (e) => runExport(e.currentTarget, xlsx));
+/** Én knap "Hent / del", der åbner et lille valg med forklaring af hver filtype. */
+export const exportButtons = (id) => `<button type="button" class="btn small ghost export-btn" id="${id}">
+  <svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>Hent / del</button>`;
+
+export function bindExportButtons(root, id, { pdf, xlsx, what = '' }) {
+  const btn = root.querySelector(`#${id}`);
+  if (!btn) return;
+  btn.onclick = () => openExportChoice({ pdf, xlsx, what });
+}
+
+export async function openExportChoice({ pdf, xlsx, what = '', title = 'Hent som fil' }) {
+  const { openModal } = await import('./ui.js');
+  const m = openModal({
+    title,
+    body: `${what ? `<p class="muted">${what}</p>` : ''}
+      <div class="exp-choices">
+        <button type="button" class="exp-opt" data-k="pdf"><span class="exp-ico">📄</span><span><b>PDF</b><small>En færdig side — til at printe, gemme på telefonen eller sende til banken.</small></span></button>
+        <button type="button" class="exp-opt" data-k="xlsx"><span class="exp-ico">📊</span><span><b>Excel</b><small>Et regneark — hvis du selv vil regne videre, sortere eller rette i tallene.</small></span></button>
+      </div>`,
+    onOpen: (form) => form.querySelectorAll('.exp-opt').forEach((b) => (b.onclick = async () => {
+      await runExport(b, b.dataset.k === 'pdf' ? pdf : xlsx);
+      m.close();
+    })),
+  });
 }
 
 // =====================================================================

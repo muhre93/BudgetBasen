@@ -88,11 +88,22 @@ service cloud.firestore {
           && request.resource.data.members.diff(resource.data.members).affectedKeys().hasOnly([request.auth.uid]);
       }
 
+      // ----- Synlighed -----
+      // Hver post/kvittering/dokument har visibleTo: ['all'] eller en liste af uid'er.
+      // Man kan kun læse, rette og slette det man selv må se — det gælder OGSÅ admin og ejer,
+      // så en gavekvittering eller et barns skjulte poster forbliver private.
+      function canSee(d) { return 'all' in d.visibleTo || request.auth.uid in d.visibleTo; }
+      function validVis(d) {
+        return d.visibleTo is list && d.visibleTo.size() > 0 && d.visibleTo.size() <= 50
+          && ('all' in d.visibleTo || request.auth.uid in d.visibleTo);   // man kan ikke skjule noget for sig selv
+      }
+
       // ----- Budgetposter -----
       match /items/{itemId} {
-        allow read: if canRead(bid);
-        allow create, update: if canEdit(bid) && validItem(request.resource.data);
-        allow delete: if canEdit(bid);
+        allow read: if canRead(bid) && canSee(resource.data);
+        allow create: if canEdit(bid) && validItem(request.resource.data) && validVis(request.resource.data);
+        allow update: if canEdit(bid) && canSee(resource.data) && validItem(request.resource.data) && validVis(request.resource.data);
+        allow delete: if canEdit(bid) && canSee(resource.data);
       }
       function validItem(d) {
         return d.type in ['expense', 'income']
@@ -104,12 +115,16 @@ service cloud.firestore {
 
       // ----- Kvitteringer og dokumenter (selve filerne ligger i Cloudflare KV) -----
       match /receipts/{id} {
-        allow read: if canRead(bid);
-        allow write: if canEdit(bid);
+        allow read: if canRead(bid) && canSee(resource.data);
+        allow create: if canEdit(bid) && validVis(request.resource.data);
+        allow update: if canEdit(bid) && canSee(resource.data) && validVis(request.resource.data);
+        allow delete: if canEdit(bid) && canSee(resource.data);
       }
       match /documents/{id} {
-        allow read: if canRead(bid);
-        allow write: if canEdit(bid);
+        allow read: if canRead(bid) && canSee(resource.data);
+        allow create: if canEdit(bid) && validVis(request.resource.data);
+        allow update: if canEdit(bid) && canSee(resource.data) && validVis(request.resource.data);
+        allow delete: if canEdit(bid) && canSee(resource.data);
       }
 
       // ----- Versioner til sammenligning -----

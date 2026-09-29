@@ -116,3 +116,14 @@ export async function purgeBudgetFiles(budgetId) {
 }
 
 export const fileSize = (b) => (b > 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+
+/** Bed Worker'en sende invitationsmail (via EmailJS). Kaster fejl hvis mail ikke er sat op. */
+export async function sendInviteMail(budgetId, email) {
+  const appUrl = `${location.origin}${location.pathname}`;
+  const res = await workerFetch('/invite', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ budget: budgetId, email, appUrl }),
+  });
+  return res.json();
+}

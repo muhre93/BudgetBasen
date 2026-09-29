@@ -3,10 +3,10 @@ import {
   db, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot,
   query, where, orderBy, limit, serverTimestamp, writeBatch, arrayUnion, arrayRemove, deleteField,
 } from './firebase.js';
-import { state, emit, lists, defaultLists, canEdit } from './state.js';
+import { state, emit, lists, defaultLists, canEdit, ALL, isShared } from './state.js';
 import { firstName, isoDate, currentYm, fmtYm, errorToast, toast, esc } from './ui.js';
 import { freqLabel } from './calc.js';
-import { removeFile, purgeBudgetFiles } from './files.js';
+import { removeFile, purgeBudgetFiles, sendInviteMail } from './files.js';
 
 export const budgetRef = (id = state.budgetId) => doc(db, 'budgets', id);
 export const sub = (name, id = state.budgetId) => collection(db, 'budgets', id, name);
@@ -19,7 +19,9 @@ const me = () => ({
 });
 
 // ---------- Log ----------
-export async function logAction(action, entity, label, changes = null, budgetId = state.budgetId) {
+export async function logAction(action, entity, label, changes = null, budgetId = state.budgetId, rec = null) {
+  // Loggen kan ses af alle medlemmer — private ting logges derfor uden navn og detaljer.
+  if (rec && !isShared(rec)) { label = 'en privat ' + ({ item: 'post', receipt: 'kvittering', document: 'fil' }[entity] || 'ting'); changes = null; }
   try {
     await addDoc(sub('log', budgetId), {
       at: serverTimestamp(), uid: state.user.uid, name: me().name,
@@ -28,13 +30,17 @@ export async function logAction(action, entity, label, changes = null, budgetId 
   } catch (e) { console.warn('Log fejlede', e); }
 }
 
-const LOG_FIELDS = { name: 'Navn', amount: 'Beløb', freq: 'Frekvens', category: 'Kategori', who: 'Hvem', supplier: 'Leverandør', method: 'Metode', account: 'Konto', startMonth: 'Første betaling', payDay: 'Betalingsdag', endMonth: 'Slutter', note: 'Note', active: 'Aktiv', private: 'Privat', type: 'Type', store: 'Butik', date: 'Dato', title: 'Titel', expiryDate: 'Udløb' };
+const LOG_FIELDS = { name: 'Navn', amount: 'Beløb', freq: 'Hvor ofte', category: 'Kategori', who: 'Hvem', split: 'Fordeling', supplier: 'Leverandør', method: 'Metode', account: 'Konto', startMonth: 'Første betaling', payDay: 'Betalingsdag', endMonth: 'Slutter', note: 'Note', active: 'Aktiv', type: 'Type', store: 'Butik', what: 'Hvad', date: 'Dato', title: 'Titel', expiryDate: 'Udløb', yearlyPrice: 'Årlig pris' };
+const fmtSplit = (sp) => (sp && typeof sp === 'object' ? Object.entries(sp).filter(([, p]) => p > 0).map(([n, p]) => `${n} ${p} %`).join(', ') : '');
 export function diffFields(oldObj = {}, newObj = {}) {
   const out = {};
   for (const k of Object.keys(LOG_FIELDS)) {
     if (!(k in newObj)) continue;
     const a = oldObj[k] ?? '', b = newObj[k] ?? '';
-    if (String(a) !== String(b)) out[LOG_FIELDS[k]] = { from: k === 'freq' ? freqLabel(a) : a, to: k === 'freq' ? freqLabel(b) : b };
+    const same = typeof a === 'object' || typeof b === 'object' ? JSON.stringify(a || null) === JSON.stringify(b || null) : String(a) === String(b);
+    if (same) continue;
+    const f = (v) => (k === 'freq' ? freqLabel(v) : k === 'split' ? fmtSplit(v) : v);
+    out[LOG_FIELDS[k]] = { from: f(a), to: f(b) };
   }
   return Object.keys(out).length ? out : null;
 }
@@ -44,19 +50,19 @@ export async function createBudget(name, { copyFromId = null } = {}) {
   const u = me();
   const ref = doc(collection(db, 'budgets'));
   let listsData = defaultLists(firstName(u.name));
-  let settings = { balances: [{ account: 'Budgetkonto', amount: 0, date: isoDate() }] };
+  let settings = { balances: [{ account: 'Budgetkonto', amount: 0, date: isoDate() }], jointAccounts: ['Budgetkonto', 'Fælleskonto'], defaultVisibleTo: [ALL], warnBelow: 1000 };
   let items = [];
   if (copyFromId) {
     const src = state.budgets.find((b) => b.id === copyFromId);
     if (src?.lists) listsData = src.lists;
     if (src?.settings) settings = src.settings;
-    items = (await getDocs(sub('items', copyFromId))).docs.map((d) => d.data());
+    items = state.items.filter(() => copyFromId === state.budgetId).map(({ id, history, ...it }) => ({ ...it, visibleTo: isShared(it) ? [ALL] : [u.uid] }));
   }
   await setDoc(ref, {
     name, ownerUid: u.uid,
     members: { [u.uid]: 'admin' },
     memberUids: [u.uid],
-    memberInfo: { [u.uid]: { name: u.name, email: u.email, photo: u.photo } },
+    memberInfo: { [u.uid]: { name: u.name, email: u.email, photo: u.photo, joinedAt: Date.now() } },
     invites: [], shares: [],
     lists: listsData, settings,
     createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
@@ -108,13 +114,15 @@ export async function addFrequency(months, label) {
   return months;
 }
 
-/** Omdøb en listeværdi og opdatér alle poster/kvitteringer/dokumenter der bruger den. */
+/** Omdøb en listeværdi og opdatér alle poster/kvitteringer/dokumenter (som man kan se) der bruger den. */
 const CASCADE = {
-  categories: [['items', 'category'], ['receipts', 'category']],
+  categories: [['items', 'category']],
   people: [['items', 'who'], ['receipts', 'who']],
-  suppliers: [['items', 'supplier'], ['receipts', 'store'], ['documents', 'supplier']],
+  suppliers: [['items', 'supplier'], ['documents', 'supplier']],
   methods: [['items', 'method']],
   accounts: [['items', 'account']],
+  stores: [['receipts', 'store']],
+  receiptCategories: [['receipts', 'category']],
   docTypes: [['documents', 'docType']],
 };
 export async function renameListValue(key, oldV, newV) {
@@ -122,17 +130,30 @@ export async function renameListValue(key, oldV, newV) {
   if (!newV || newV === oldV) return 0;
   const L = lists();
   const patch = { [`lists.${key}`]: L[key].map((x) => (x === oldV ? newV : x)), updatedAt: serverTimestamp() };
-  if (key === 'accounts') patch['settings.balances'] = (state.budget.settings?.balances || []).map((b) => (b.account === oldV ? { ...b, account: newV } : b));
+  if (key === 'accounts') {
+    patch['settings.balances'] = (state.budget.settings?.balances || []).map((b) => (b.account === oldV ? { ...b, account: newV } : b));
+    const j = state.budget.settings?.jointAccounts;
+    if (Array.isArray(j)) patch['settings.jointAccounts'] = j.map((x) => (x === oldV ? newV : x));
+  }
+  if (key === 'people') {
+    const js = state.budget.settings?.jointSplit;
+    if (js && oldV in js) { const c = { ...js, [newV]: js[oldV] }; delete c[oldV]; patch['settings.jointSplit'] = c; }
+  }
   await updateDoc(budgetRef(), patch);
   let n = 0;
   for (const [colName, field] of CASCADE[key] || []) {
-    const snap = await getDocs(query(sub(colName), where(field, '==', oldV)));
-    for (let i = 0; i < snap.docs.length; i += 400) {
+    const rows = colName === 'items' ? state.items : await loadAll(colName);
+    const hits = rows.filter((r) => r[field] === oldV || (key === 'people' && r.split && oldV in r.split));
+    for (let i = 0; i < hits.length; i += 400) {
       const b = writeBatch(db);
-      snap.docs.slice(i, i + 400).forEach((d) => b.update(d.ref, { [field]: newV }));
+      hits.slice(i, i + 400).forEach((r) => {
+        const upd = r[field] === oldV ? { [field]: newV } : {};
+        if (key === 'people' && r.split && oldV in r.split) { const sp = { ...r.split, [newV]: r.split[oldV] }; delete sp[oldV]; upd.split = sp; }
+        b.update(doc(sub(colName), r.id), upd);
+      });
       await b.commit();
     }
-    n += snap.size;
+    n += hits.length;
   }
   logAction('update', 'list', `${key}: ${oldV} → ${newV}`, n ? { Opdateret: { from: '', to: `${n} poster` } } : null);
   return n;
@@ -145,20 +166,23 @@ export async function removeListValue(key, value) {
 }
 
 // ---------- Budgetposter ----------
+/** Gemmer posten. Ved ændringer lægges "før → efter" i postens egen historik (seneste 40). */
 export async function saveItem(id, data, old = null) {
-  const base = { ...data, updatedAt: serverTimestamp(), updatedBy: state.user.uid };
+  const base = { ...data, updatedAt: serverTimestamp(), updatedBy: state.user.uid, updatedByName: me().name };
   if (id) {
+    const changes = diffFields(old || {}, data);
+    if (changes) base.history = [...(old?.history || []), { at: Date.now(), by: me().name, changes }].slice(-40);
     await updateDoc(doc(sub('items'), id), base);
-    logAction('update', 'item', data.name, diffFields(old || {}, data));
+    logAction('update', 'item', data.name, changes, state.budgetId, data);
     return id;
   }
-  const ref = await addDoc(sub('items'), { ...base, createdAt: serverTimestamp(), createdBy: state.user.uid });
-  logAction('create', 'item', data.name, { Beløb: { from: '', to: data.amount } });
+  const ref = await addDoc(sub('items'), { ...base, history: [], createdAt: serverTimestamp(), createdBy: state.user.uid, createdByName: me().name });
+  logAction('create', 'item', data.name, { Beløb: { from: '', to: data.amount } }, state.budgetId, data);
   return ref.id;
 }
 export async function deleteItem(item) {
   await deleteDoc(doc(sub('items'), item.id));
-  logAction('delete', 'item', item.name, { Beløb: { from: item.amount, to: '' } });
+  logAction('delete', 'item', item.name, { Beløb: { from: item.amount, to: '' } }, state.budgetId, item);
 }
 
 // ---------- Kvitteringer & dokumenter (generisk) ----------
@@ -168,39 +192,65 @@ export async function saveRecord(colName, id, data, old = null) {
   const label = data.title || [data.store, data.what].filter(Boolean).join(' – ') || 'Uden navn';
   if (id) {
     await updateDoc(doc(sub(colName), id), base);
-    logAction('update', entity, label, diffFields(old || {}, data));
+    logAction('update', entity, label, diffFields(old || {}, data), state.budgetId, data);
     return id;
   }
   const ref = await addDoc(sub(colName), { ...base, createdAt: serverTimestamp(), createdBy: state.user.uid, createdByName: me().name });
-  logAction('create', entity, label);
+  logAction('create', entity, label, null, state.budgetId, data);
   return ref.id;
 }
 export async function deleteRecord(colName, rec) {
   const files = rec.files || (rec.file ? [rec.file] : []);
   for (const f of files) await removeFile(f).catch((e) => console.warn(e));
   await deleteDoc(doc(sub(colName), rec.id));
-  logAction('delete', colName === 'receipts' ? 'receipt' : 'document', rec.title || rec.store || '');
+  logAction('delete', colName === 'receipts' ? 'receipt' : 'document', rec.title || rec.what || rec.store || '', null, state.budgetId, rec);
 }
 
-/** Lazy lyt på en under-samling (receipts/documents) for aktivt budget. */
+/**
+ * Lyt på en under-samling, men KUN de dokumenter brugeren må se:
+ * to forespørgsler (delt med alle + delt med mig) flettes sammen.
+ * Sikkerhedsreglerne afviser alt andet, så private ting aldrig forlader serveren.
+ */
+export function watchVisible(colName, onData, onError = errorToast) {
+  const parts = { all: null, mine: null };
+  const push = () => {
+    if (!parts.all || !parts.mine) return;
+    const map = new Map();
+    for (const d of [...parts.all, ...parts.mine]) map.set(d.id, d);
+    onData([...map.values()]);
+  };
+  const conv = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const u1 = onSnapshot(query(sub(colName), where('visibleTo', 'array-contains', ALL)), (s) => { parts.all = conv(s); push(); }, onError);
+  const u2 = onSnapshot(query(sub(colName), where('visibleTo', 'array-contains', state.user.uid)), (s) => { parts.mine = conv(s); push(); }, onError);
+  return () => { u1(); u2(); };
+}
+export async function loadAll(colName, budgetId = state.budgetId) {
+  if (colName !== 'items' && state.col[colName] && budgetId === state.budgetId) return state.col[colName];
+  const [a, b] = await Promise.all([
+    getDocs(query(sub(colName, budgetId), where('visibleTo', 'array-contains', ALL))),
+    getDocs(query(sub(colName, budgetId), where('visibleTo', 'array-contains', state.user.uid))),
+  ]);
+  const map = new Map();
+  for (const d of [...a.docs, ...b.docs]) map.set(d.id, { id: d.id, ...d.data() });
+  return [...map.values()];
+}
+
+/** Lazy lyt på kvitteringer/dokumenter for aktivt budget. */
 export function watch(colName) {
   const key = `${state.budgetId}:${colName}`;
   if (state.unsubs[`col:${colName}`]?.key === key) return;
   state.unsubs[`col:${colName}`]?.fn?.();
   state.col[colName] = null;
-  const fn = onSnapshot(sub(colName), (snap) => {
-    state.col[colName] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    emit();
-  }, errorToast);
+  const fn = watchVisible(colName, (rows) => { state.col[colName] = rows; emit(); });
   state.unsubs[`col:${colName}`] = { key, fn };
 }
 
 // ---------- Versioner (snapshots) ----------
-const cleanItem = ({ createdAt, updatedAt, createdBy, updatedBy, ...rest }) => rest;
+const cleanItem = ({ createdAt, updatedAt, createdBy, updatedBy, history, ...rest }) => rest;
 export async function saveSnapshot(name, auto = false) {
   const data = {
     name, auto, createdAt: serverTimestamp(), createdBy: state.user.uid, createdByName: me().name,
-    items: state.items.map(cleanItem), balances: state.budget.settings?.balances || [],
+    items: state.items.filter(isShared).map(cleanItem), balances: state.budget.settings?.balances || [],
   };
   if (auto) { await setDoc(doc(sub('snapshots'), `auto_${currentYm()}`), data); }
   else { await addDoc(sub('snapshots'), data); logAction('create', 'snapshot', name); }
@@ -241,6 +291,19 @@ export async function inviteMember(email, role) {
   const invites = (state.budget.invites || []).filter((i) => i.email !== email);
   await updateDoc(budgetRef(), { invites: [...invites, { email, role, at: Date.now() }], updatedAt: serverTimestamp() });
   logAction('create', 'member', `Inviterede ${email}`, { Rolle: { from: '', to: role } });
+  return sendInvite(email);
+}
+/** Send (eller gensend) invitationsmail via Worker'en. Returnerer 'sent' eller 'manual'. */
+export async function sendInvite(email) {
+  try {
+    await sendInviteMail(state.budgetId, email);
+    const invites = (state.budget.invites || []).map((i) => (i.email === email ? { ...i, mailedAt: Date.now() } : i));
+    await updateDoc(budgetRef(), { invites }).catch(() => {});
+    return 'sent';
+  } catch (e) {
+    console.warn('Invitationsmail kunne ikke sendes automatisk', e);
+    return 'manual';
+  }
 }
 export async function revokeInvite(email) {
   await deleteDoc(doc(db, 'invites', `${state.budgetId}_${email}`)).catch(() => {});
@@ -279,7 +342,7 @@ export async function acceptInvite(inv) {
   await updateDoc(doc(db, 'budgets', inv.budgetId), {
     [`members.${u.uid}`]: inv.role,
     memberUids: arrayUnion(u.uid),
-    [`memberInfo.${u.uid}`]: { name: u.name, email: u.email, photo: u.photo },
+    [`memberInfo.${u.uid}`]: { name: u.name, email: u.email, photo: u.photo, joinedAt: Date.now() },
   });
   await deleteDoc(doc(db, 'invites', inv.id)).catch(() => {});
   await logAction('create', 'member', `${u.name} accepterede invitationen`, null, inv.budgetId);
@@ -291,11 +354,14 @@ export async function deleteBudgetCompletely(budget) {
   const id = budget.id;
   // 1) Alle filer i Cloudflare KV (skal ske mens budgettet findes, så Worker'en kan tjekke ejerskab)
   try { await purgeBudgetFiles(id); } catch (e) { console.warn('Filer kunne ikke slettes', e); }
+  // Andres private ting kan ejeren ikke se — de bliver utilgængelige for alle, når budgettet er slettet.
   for (const colName of ['items', 'receipts', 'documents', 'snapshots', 'log']) {
-    const snap = await getDocs(sub(colName, id));
-    for (let i = 0; i < snap.docs.length; i += 400) {
+    const rows = ['items', 'receipts', 'documents'].includes(colName)
+      ? await loadAll(colName, id)
+      : (await getDocs(sub(colName, id))).docs.map((d) => ({ id: d.id }));
+    for (let i = 0; i < rows.length; i += 400) {
       const b = writeBatch(db);
-      snap.docs.slice(i, i + 400).forEach((d) => b.delete(d.ref));
+      rows.slice(i, i + 400).forEach((r) => b.delete(doc(sub(colName, id), r.id)));
       await b.commit();
     }
   }

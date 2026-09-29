@@ -8,6 +8,7 @@
 //  • Likviditet regnes i hele øre (heltal) for at undgå afrundingsfejl (0,1 + 0,2 ≠ 0,3).
 //  • Betalinger med betalingsdag på eller før dags dato i indeværende måned
 //    regnes som allerede trukket (saldoen du indtaster i dag er efter dem).
+//  • Samme dag: penge ind før penge ud (faste overførsler lander før Betalingsservice).
 // =====================================================================
 
 export const DEFAULT_FREQUENCIES = [
@@ -184,7 +185,7 @@ export function requiredBalance(items, account = null, today = new Date()) {
 // ---------- Likviditet ----------
 /**
  * Simulér saldoen dag for dag (pr. hændelse) de næste `horizon` måneder.
- * Samme dag: udgifter trækkes før indtægter (forsigtigt / worst case).
+ * Samme dag: penge ind før penge ud (sådan behandler bankerne faste overførsler og Betalingsservice).
  */
 export function projectCashflow(items, startBalance, today = new Date(), horizon = 12) {
   const now = dateToIndex(today);
@@ -203,7 +204,7 @@ export function projectCashflow(items, startBalance, today = new Date(), horizon
       const ore = toOre(it.amount);
       evs.push({ day: d, ore: it.type === 'income' ? ore : -ore, name: it.name, id: it.id, type: it.type, account: it.account || '' });
     }
-    evs.sort((a, b) => a.day - b.day || a.ore - b.ore);
+    evs.sort((a, b) => a.day - b.day || b.ore - a.ore);
 
     const m = { mi, ym: indexToYm(mi), start: bal, income: 0, expense: 0, min: bal, minDay: null, events: [] };
     for (const e of evs) {
@@ -253,12 +254,13 @@ export function compareItems(oldItems, newItems, today = new Date()) {
   const removed = [...oldLeft.values()];
 
   const changed = [];
-  let unchanged = 0;
+  const same = [];
   for (const [o, n] of pairs) {
     const fields = COMPARE_FIELDS.filter((f) => String(o[f] ?? '') !== String(n[f] ?? ''));
     if (fields.length) changed.push({ old: o, new: n, fields, deltaMonthly: eff(n) - eff(o) });
-    else unchanged++;
+    else same.push({ old: o, new: n, deltaMonthly: 0 });
   }
+  const unchanged = same.length;
 
   const a = summarize(oldItems, today);
   const b = summarize(newItems, today);
@@ -271,14 +273,87 @@ export function compareItems(oldItems, newItems, today = new Date()) {
   }).filter((c) => Math.abs(c.delta) > 0.004 || c.before || c.after)
     .sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));
 
+  // Alle poster side om side (før | nu), til en fuld sammenligning
+  const rows = [
+    ...same.map((p) => ({ status: 'same', item: p.new, before: eff(p.old), after: eff(p.new), fields: [] })),
+    ...changed.map((c) => ({ status: 'changed', item: c.new, old: c.old, before: eff(c.old), after: eff(c.new), fields: c.fields })),
+    ...added.map((n) => ({ status: 'added', item: n, before: 0, after: eff(n), fields: [] })),
+    ...removed.map((o) => ({ status: 'removed', item: o, before: eff(o), after: 0, fields: [] })),
+  ].map((r) => ({ ...r, delta: r.after - r.before }));
+
   return {
+    rows,
     added: added.map((n) => ({ item: n, deltaMonthly: eff(n) })),
     removed: removed.map((o) => ({ item: o, deltaMonthly: -eff(o) })),
-    changed, unchanged, categories,
+    changed, unchanged, same, categories,
     totals: {
       before: { income: a.income, expense: a.expense, net: a.net },
       after: { income: b.income, expense: b.expense, net: b.net },
       delta: { income: b.income - a.income, expense: b.expense - a.expense, net: b.net - a.net },
     },
   };
+}
+
+// ---------- Fordeling pr. person ----------
+export const JOINT = 'Fælles';
+
+/**
+ * Hvordan fordeles én posts månedlige beløb?
+ *  • Trækkes posten fra / går den ind på en FÆLLESKONTO → hele beløbet er "Fælles".
+ *  • Ellers bruges item.split { navn: procent } (normaliseres til 100 %).
+ *  • Uden split: 100 % til item.who ("Fælles"/tom → fælles).
+ * Returnerer { joint: bool, parts: { navn: kr pr. md. } }
+ */
+export function shareOf(item, jointAccounts = []) {
+  const m = monthly(item);
+  if (item.account && jointAccounts.includes(item.account)) return { joint: true, parts: { [JOINT]: m } };
+  const split = item.split && typeof item.split === 'object' ? Object.entries(item.split).filter(([, p]) => Number(p) > 0) : [];
+  const total = split.reduce((s, [, p]) => s + Number(p), 0);
+  if (total > 0) {
+    const parts = {};
+    for (const [name, p] of split) parts[name] = (parts[name] || 0) + (m * Number(p)) / total;
+    return { joint: false, parts };
+  }
+  const who = item.who && item.who !== JOINT ? item.who : JOINT;
+  return { joint: who === JOINT, parts: { [who]: m } };
+}
+
+/**
+ * Samlet overblik: hvad skal hver person af med, og hvad kommer ind?
+ * jointSplit { navn: procent } = hvordan I deler det, fælleskontoen mangler (standard: lige over).
+ */
+export function personSummary(items, { jointAccounts = [], jointSplit = null, people = [], today = new Date() } = {}) {
+  const now = dateToIndex(today);
+  const persons = {};
+  const ensure = (n) => (persons[n] ??= { name: n, ownExpense: 0, income: 0, jointContribution: 0, items: [] });
+  const joint = { expense: 0, income: 0, items: [] };
+  for (const n of people) if (n !== JOINT) ensure(n);
+
+  for (const it of items) {
+    if (!countsInBudget(it, now)) continue;
+    const { parts } = shareOf(it, jointAccounts);
+    for (const [name, amt] of Object.entries(parts)) {
+      if (name === JOINT) {
+        if (it.type === 'income') joint.income += amt; else joint.expense += amt;
+        joint.items.push({ item: it, amount: amt });
+      } else {
+        const p = ensure(name);
+        if (it.type === 'income') p.income += amt; else p.ownExpense += amt;
+        p.items.push({ item: it, amount: amt });
+      }
+    }
+  }
+
+  // Hvor meget skal der overføres til fælles? (fælles udgifter minus det, der kommer direkte ind på fælleskonti)
+  const jointNeed = Math.max(0, joint.expense - joint.income);
+  const names = Object.keys(persons);
+  let split = jointSplit && Object.values(jointSplit).some((p) => Number(p) > 0) ? jointSplit : null;
+  if (!split) split = Object.fromEntries(names.map((n) => [n, 100 / (names.length || 1)]));
+  const total = Object.entries(split).filter(([n]) => persons[n]).reduce((s, [, p]) => s + Number(p || 0), 0);
+  for (const n of names) {
+    persons[n].jointContribution = total > 0 ? (jointNeed * Number(split[n] || 0)) / total : 0;
+    persons[n].totalOut = persons[n].ownExpense + persons[n].jointContribution;
+    persons[n].left = persons[n].income - persons[n].totalOut;
+  }
+  return { persons: Object.values(persons), joint: { ...joint, need: jointNeed }, split };
 }

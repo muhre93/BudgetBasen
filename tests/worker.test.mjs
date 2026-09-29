@@ -14,7 +14,14 @@ const env = { FILES, FIREBASE_PROJECT_ID: 'proj', ALLOWED_ORIGINS: 'https://kron
 
 // --- Falsk Firestore: budget B1 har ejer u1 (admin), u2 (read). u3 er ikke medlem → 403 ---
 const members = { u1: 'admin', u2: 'read', u4: 'edit' };
+const mails = [];
 globalThis.fetch = async (url, opts) => {
+  if (url.startsWith('https://api.emailjs.com')) { mails.push(JSON.parse(opts.body)); return new Response('OK', { status: 200 }); }
+  if (url.includes('/invites/')) {
+    return url.endsWith('/invites/B1_maria@example.com')
+      ? new Response(JSON.stringify({ fields: { role: { stringValue: 'edit' }, budgetName: { stringValue: 'Familien' } } }), { status: 200 })
+      : new Response('{}', { status: 404 });
+  }
   const uid = JSON.parse(atob(opts.headers.Authorization.split('.')[1])).user_id;
   if (!url.includes('/budgets/B1?') || !members[uid]) return new Response('{}', { status: 403 });
   return new Response(JSON.stringify({ fields: {
@@ -73,5 +80,23 @@ await t('redaktør kan ikke slette hele budgettet; ejer kan', async () => {
   assert.equal((await call('DELETE', '/budget?budget=B1', 'u4')).status, 403);
   const r = await call('DELETE', '/budget?budget=B1', 'u1');
   assert.equal(r.status, 200); assert.equal((await r.json()).deleted, 2); assert.equal(kv.size, 0);
+});
+await t('invitationsmail: kun admin, kun til rigtige invitationer, link kun til egne sider', async () => {
+  const env2 = { ...env, EMAILJS_SERVICE_ID: 's', EMAILJS_TEMPLATE_ID: 't', EMAILJS_PUBLIC_KEY: 'p', EMAILJS_PRIVATE_KEY: 'k' };
+  const inv = (uid, email, appUrl = 'https://kronborg1980.github.io/BudgetBasen/') => worker.fetch(new Request('https://w.dev/invite', {
+    method: 'POST', body: JSON.stringify({ budget: 'B1', email, appUrl }),
+    headers: { Origin: 'https://kronborg1980.github.io', Authorization: `Bearer ${tok(uid)}`, 'Content-Type': 'application/json' },
+  }), env2);
+  assert.equal((await inv('u4', 'maria@example.com')).status, 403, 'redaktør må ikke');
+  assert.equal((await inv('u1', 'fremmed@example.com')).status, 404, 'ingen invitation');
+  const ok = await inv('u1', 'Maria@Example.com');
+  assert.equal(ok.status, 200);
+  assert.equal(mails.length, 1);
+  assert.equal(mails[0].template_params.to_email, 'maria@example.com');
+  assert.equal(mails[0].template_params.budget_name, 'Familien');
+  await inv('u1', 'maria@example.com', 'https://evil.example/phish');
+  assert.ok(!mails[1].template_params.app_url.includes('evil') && mails[1].template_params.app_url.startsWith('https://kronborg1980.github.io'), 'fremmed link erstattes');
+  const noMail = await worker.fetch(new Request('https://w.dev/invite', { method: 'POST', body: '{}', headers: { Origin: 'https://kronborg1980.github.io', Authorization: `Bearer ${tok('u1')}` } }), env);
+  assert.equal(noMail.status, 501, 'uden EmailJS-opsætning');
 });
 console.log(`\n${n} worker-tests bestået.`);

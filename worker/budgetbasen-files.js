@@ -16,6 +16,8 @@
 //        FIREBASE_PROJECT_ID = dit Firebase-projekt-id (f.eks. budgetbasen-12345)
 //        ALLOWED_ORIGINS     = https://kronborg1980.github.io
 //      (flere oprindelser adskilles med komma)
+//   5. (Valgfrit) Invitationsmails via EmailJS — se README. Tilføj som *Secret*:
+//        EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, EMAILJS_PUBLIC_KEY, EMAILJS_PRIVATE_KEY
 // =====================================================================
 
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB pr. fil (KV tillader op til 25 MiB)
@@ -101,6 +103,41 @@ export default {
         return json({ deleted: count }, 200, cors);
       }
 
+      // Invitationsmail: POST /invite  { budget, email, appUrl }  — kun admins af budgettet
+      if (path === '/invite' && request.method === 'POST') {
+        if (!env.EMAILJS_SERVICE_ID || !env.EMAILJS_TEMPLATE_ID || !env.EMAILJS_PUBLIC_KEY) throw new HttpError(501, 'Invitationsmail er ikke sat op');
+        const body = await request.json().catch(() => ({}));
+        const bid = safeId(body.budget);
+        const email = String(body.email || '').trim().toLowerCase();
+        if (!/^[^@\s/]+@[^@\s/]+\.[^@\s/]+$/.test(email) || email.length > 120) throw new HttpError(400, 'Ugyldig e-mail');
+        const auth = await authorize(request, env, bid, ['admin']);
+        // Der skal findes en rigtig invitation (kun admins kan oprette dem) → ingen spam via Worker'en
+        const inv = await firestoreGet(env, auth.token, `invites/${bid}_${email}`);
+        if (!inv) throw new HttpError(404, 'Invitationen findes ikke');
+        const appUrl = allowedAppUrl(body.appUrl, env);
+        const role = inv.fields?.role?.stringValue || 'read';
+        const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            service_id: env.EMAILJS_SERVICE_ID,
+            template_id: env.EMAILJS_TEMPLATE_ID,
+            user_id: env.EMAILJS_PUBLIC_KEY,
+            accessToken: env.EMAILJS_PRIVATE_KEY || undefined,
+            template_params: {
+              to_email: email,
+              inviter_name: auth.name || 'Et familiemedlem',
+              reply_to: auth.email || '',
+              budget_name: inv.fields?.budgetName?.stringValue || 'et budget',
+              role_text: { admin: 'administrator', edit: 'redaktør (kan tilføje og rette)', read: 'læser (kan se)' }[role] || role,
+              app_url: appUrl,
+            },
+          }),
+        });
+        if (!res.ok) throw new HttpError(502, `Mailen kunne ikke sendes (${res.status}): ${(await res.text()).slice(0, 120)}`);
+        return json({ sent: true }, 200, cors);
+      }
+
       throw new HttpError(404, 'Ukendt endpoint');
     } catch (e) {
       const status = e instanceof HttpError ? e.status : 500;
@@ -135,7 +172,7 @@ async function authorize(request, env, budgetId, allowedRoles) {
   const doc = await res.json();
   const role = doc.fields?.members?.mapValue?.fields?.[uid]?.stringValue || '';
   if (!allowedRoles.includes(role)) throw new HttpError(403, 'Din rolle giver ikke adgang til dette');
-  return { uid, role, isOwner: doc.fields?.ownerUid?.stringValue === uid };
+  return { uid, role, isOwner: doc.fields?.ownerUid?.stringValue === uid, token, name: claims.name || '', email: claims.email || '' };
 }
 
 function decodeJwt(token) {
@@ -148,6 +185,22 @@ function decodeJwt(token) {
   } catch {
     throw new HttpError(401, 'Ugyldigt token');
   }
+}
+
+async function firestoreGet(env, token, path) {
+  const res = await fetch(`https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (res.status === 404 || res.status === 403) return null;
+  if (!res.ok) throw new HttpError(502, `Firestore svarede ${res.status}`);
+  return res.json();
+}
+/** Linket i mailen må kun pege på en af jeres egne adresser. */
+function allowedAppUrl(url, env) {
+  const allowed = String(env.ALLOWED_ORIGINS || '').split(',').map((x) => x.trim()).filter(Boolean);
+  try {
+    const u = new URL(url);
+    if (allowed.includes(u.origin)) return u.origin + u.pathname;
+  } catch { /* ugyldig */ }
+  return allowed[0] || '';
 }
 
 // ---------- Hjælpere ----------

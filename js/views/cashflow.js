@@ -1,99 +1,175 @@
-// Likviditet: simulerer saldoen hændelse for hændelse, så man kan se om og hvornår kontoen går i minus.
-import { state, lists } from '../state.js';
-import { esc, kr, krSigned, fmtYm, fmtDate, parseAmount, numToInput, toDate } from '../ui.js';
-import { projectCashflow, calendarYear, dateToIndex } from '../calc.js';
+// Likviditet: "Er der penge nok på kontoen, når regningerne skal betales?"
+// Hver betaling gennemgås dag for dag. Vises som månedskort med trafiklys i hverdagssprog.
+import { state, lists, canEdit } from '../state.js';
+import { esc, kr, krSigned, fmtYm, fmtDate, parseAmount, numToInput, toast } from '../ui.js';
+import { projectCashflow, calendarYear, requiredBalance } from '../calc.js';
 import { exportButtons, bindExportButtons, cashflowToPdf, cashflowToExcel } from '../export.js';
+import { helpBtn } from '../help.js';
+import { budgetRef } from '../data.js';
+import { updateDoc } from '../firebase.js';
+import { openItemModal } from './budget.js';
 
-const ui = { account: '__all', horizon: 12, override: '', open: new Set() };
+const ALL = '__all';
+const ui = { account: null, horizon: 12, override: '', open: new Set(), table: false };
+
+function accountsInUse() {
+  const balances = state.budget.settings?.balances || [];
+  return [...new Set([...balances.map((b) => b.account), ...state.items.map((i) => i.account).filter(Boolean)])];
+}
 
 export function render(root) {
-  const L = lists();
+  const accounts = accountsInUse();
+  if (ui.account === null || (ui.account !== ALL && !accounts.includes(ui.account))) {
+    ui.account = accounts.includes('Budgetkonto') ? 'Budgetkonto' : accounts[0] || ALL;
+  }
+  const key = `cashflow:${state.budgetId}:${JSON.stringify(accounts)}:${canEdit()}`;
+  if (root.dataset.shell !== key) {
+    root.dataset.shell = key;
+    root.innerHTML = `<div class="view-wrap">
+      <section class="glass card cf-intro">
+        <h2>Er der penge nok på kontoen? ${helpBtn('cashflow')}</h2>
+        <div class="cf-controls">
+          <label>Hvilken konto vil du se?
+            <select id="cf-acc">
+              ${accounts.map((a) => `<option value="${esc(a)}">${esc(a)}</option>`).join('')}
+              <option value="${ALL}">Alle konti lagt sammen</option>
+            </select>
+          </label>
+          <label>Hvor langt frem?
+            <select id="cf-h">${[6, 12, 18, 24].map((h) => `<option value="${h}">${h} måneder</option>`).join('')}</select>
+          </label>
+          <label>Prøv med en anden saldo
+            <input id="cf-ov" inputmode="decimal" placeholder="fx 5.000" autocomplete="off">
+          </label>
+        </div>
+        <p class="muted small" id="cf-explain"></p>
+      </section>
+      <div id="cf-results"></div></div>`;
+    const w = root.firstElementChild;
+    w.querySelector('#cf-acc').value = ui.account;
+    w.querySelector('#cf-h').value = String(ui.horizon);
+    w.querySelector('#cf-ov').value = ui.override;
+    w.querySelector('#cf-acc').onchange = (e) => { ui.account = e.target.value; ui.override = ''; w.querySelector('#cf-ov').value = ''; update(root); };
+    w.querySelector('#cf-h').onchange = (e) => { ui.horizon = Number(e.target.value); update(root); };
+    const ov = w.querySelector('#cf-ov');
+    ov.addEventListener('input', () => { ui.override = ov.value; update(root); });
+    ov.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ov.blur(); } });
+    w.addEventListener('click', (e) => {
+      const card = e.target.closest('[data-month]');
+      if (card && !e.target.closest('.events')) {
+        const ym = card.dataset.month;
+        if (ui.open.has(ym)) ui.open.delete(ym); else ui.open.add(ym);
+        update(root);
+      }
+      if (e.target.closest('#cf-add-transfer')) {
+        const r = requiredBalance(state.items, ui.account);
+        openItemModal({ type: 'income', name: `Overførsel til ${ui.account}`, amount: Math.ceil(r.monthlyTransfer / 100) * 100, freq: 1, payDay: 1, account: ui.account, category: 'Opsparing', active: true, startMonth: new Date().toISOString().slice(0, 7) });
+      }
+    });
+    w.addEventListener('change', async (e) => {
+      if (e.target.id === 'cf-warn' && canEdit()) {
+        const v = parseAmount(e.target.value);
+        if (Number.isNaN(v)) return;
+        await updateDoc(budgetRef(), { 'settings.warnBelow': v }).catch(() => toast('Kunne ikke gemme', 'error'));
+      }
+      if (e.target.id === 'cf-table') { ui.table = e.target.checked; update(root); }
+    });
+  }
+  update(root);
+}
+
+function update(root) {
   const today = new Date();
   const balances = state.budget.settings?.balances || [];
-  const accounts = [...new Set([...balances.map((b) => b.account), ...state.items.map((i) => i.account).filter(Boolean)])];
-  if (ui.account !== '__all' && !accounts.includes(ui.account)) ui.account = '__all';
-
-  const baseBal = ui.account === '__all'
-    ? balances.reduce((s, b) => s + (Number(b.amount) || 0), 0)
-    : Number(balances.find((b) => b.account === ui.account)?.amount) || 0;
+  const warnBelow = Number(state.budget.settings?.warnBelow ?? 1000);
+  const isAll = ui.account === ALL;
+  const bal = balances.find((b) => b.account === ui.account);
+  const baseBal = isAll ? balances.reduce((s, b) => s + (Number(b.amount) || 0), 0) : Number(bal?.amount) || 0;
   const ov = parseAmount(ui.override);
   const startBal = ui.override.trim() !== '' && !Number.isNaN(ov) ? ov : baseBal;
-  const items = ui.account === '__all' ? state.items : state.items.filter((i) => (i.account || '') === ui.account);
+  const items = isAll ? state.items : state.items.filter((i) => (i.account || '') === ui.account);
+  const hasIncome = items.some((i) => i.type === 'income' && i.active !== false);
+  const hasExpense = items.some((i) => i.type === 'expense' && i.active !== false);
+
+  root.querySelector('#cf-explain').innerHTML = isAll
+    ? 'Alle jeres konti regnes som én stor pengekasse: al løn ind, alle regninger ud.'
+    : `Viser kun de regninger der trækkes fra <b>${esc(ui.account)}</b>, og de penge der sættes ind på den. Startsaldoen er ${bal ? `den du skrev ${fmtDate(bal.date)}` : '0 kr. (du har ikke skrevet en saldo endnu)'}.`;
+
+  const out = root.querySelector('#cf-results');
+  if (!items.length) {
+    out.innerHTML = `<div class="empty glass"><div class="empty-emoji">📭</div><h3>Ingen poster på ${esc(isAll ? 'nogen konto' : ui.account)}</h3><p>Vælg en anden konto ovenfor, eller angiv konto på dine poster under Budget.</p></div>`;
+    return;
+  }
 
   const cf = projectCashflow(items, startBal, today, ui.horizon);
   const year = today.getFullYear();
   const dec = cf.months.find((m) => m.ym === `${year}-12`);
   const cal = calendarYear(items, year);
-  const balDate = ui.account === '__all' ? null : balances.find((b) => b.account === ui.account)?.date;
+  const light = (min) => (min < 0 ? 'red' : min < warnBelow ? 'yellow' : 'green');
+  const worst = cf.months.reduce((w, m) => (m.min < w.min ? m : w), cf.months[0]);
+  const status = light(worst.min);
 
-  root.innerHTML = `
-    <section class="toolbar glass">
-      <div class="toolbar-row">
-        <label class="inline">Konto
-          <select id="cf-acc">
-            <option value="__all">Alle konti samlet</option>
-            ${accounts.map((a) => `<option ${a === ui.account ? 'selected' : ''}>${esc(a)}</option>`).join('')}
-          </select>
-        </label>
-        <label class="inline">Periode
-          <select id="cf-h">${[6, 12, 18, 24].map((h) => `<option value="${h}" ${h === ui.horizon ? 'selected' : ''}>${h} mdr.</option>`).join('')}</select>
-        </label>
-        <label class="inline">Startsaldo
-          <input id="cf-ov" inputmode="decimal" placeholder="${numToInput(Math.round(baseBal * 100) / 100)}" value="${esc(ui.override)}" title="Prøv en anden saldo (gemmes ikke)">
-        </label>
-        <span class="spacer"></span>
-        ${exportButtons('cf-exp')}
-      </div>
-      ${ui.account === '__all' ? '<p class="hint">Tip: Når du ser "Alle konti", skal overførsler mellem egne konti ikke oprettes som poster — de tæller ellers dobbelt. Vælg en enkelt konto (f.eks. Budgetkonto) og opret den månedlige overførsel som en indtægt på den konto.</p>' : ''}
-    </section>
+  const banner = {
+    red: () => `<div class="traffic red glass"><span class="tl">🔴</span><div><b>Der mangler penge ${fmtYm(cf.firstNegative.ym, true)}</b>
+      <p>Den ${cf.lowest.day}. ${fmtYm(cf.lowest.ym, true)} kommer kontoen ned på <b>${kr(cf.lowest.amount)}</b> Der skal sættes mindst <b>${kr(-cf.lowest.amount)}</b> ind inden da — eller flyt en betalingsdato.</p></div></div>`,
+    yellow: () => `<div class="traffic yellow glass"><span class="tl">🟡</span><div><b>Det bliver stramt</b>
+      <p>Kontoen går ikke i minus, men ${worst.minDay ? `den ${worst.minDay}. ${fmtYm(worst.ym, true)} er der kun <b>${kr(worst.min)}</b> tilbage` : `lige nu står der kun <b>${kr(worst.min)}</b> på kontoen${!bal ? ' — har du husket at skrive saldoen under Budget?' : ''}`}</p></div></div>`,
+    green: () => `<div class="traffic green glass"><span class="tl">🟢</span><div><b>Der er penge nok hele vejen</b>
+      <p>Det laveste kontoen kommer ned på er <b>${kr(cf.lowest.amount)}</b> (${fmtDate(cf.lowest.date)})</p></div></div>`,
+  }[status]();
 
-    ${cf.firstNegative
-      ? `<div class="alert neg glass"><b>⚠ Kontoen går i minus ${cf.firstNegative.minDay ? `den ${cf.firstNegative.minDay}.` : 'i'} ${fmtYm(cf.firstNegative.ym, true)}</b>
-         <span>Laveste punkt i perioden: ${kr(cf.lowest.amount)} den ${fmtDate(cf.lowest.date)}. Overvej at flytte en betalingsdato, øge den månedlige overførsel eller sætte ${kr(-cf.lowest.amount)} ekstra ind.</span></div>`
-      : `<div class="alert pos glass"><b>✓ Kontoen holder sig i plus hele perioden</b><span>Laveste saldo: ${kr(cf.lowest.amount)} den ${fmtDate(cf.lowest.date)}.</span></div>`}
+  const needsTransfer = !isAll && hasExpense && !hasIncome;
+  out.innerHTML = `
+    ${banner}
+    ${needsTransfer ? `<div class="hint warn">💡 Der går ingen penge <i>ind</i> på ${esc(ui.account)} i budgettet — derfor ser det ud som om kontoen løber tør.
+      Tilføj den faste månedlige overførsel, så bliver beregningen rigtig.
+      ${canEdit() ? '<br><button class="btn small primary" id="cf-add-transfer" type="button" style="margin-top:.5rem">＋ Tilføj månedlig overførsel</button>' : ''}</div>` : ''}
 
     <section class="kpis">
-      <div class="kpi glass"><div class="kpi-label">Startsaldo i dag</div><div class="kpi-value">${kr(startBal)}</div><div class="kpi-sub">${balDate ? `Saldo fra ${fmtDate(balDate)}` : 'Sum af registrerede saldi'}</div></div>
-      <div class="kpi glass ${cf.lowest.amount < 0 ? 'neg' : ''}"><div class="kpi-label">Laveste punkt</div><div class="kpi-value">${kr(cf.lowest.amount)}</div><div class="kpi-sub">${fmtDate(cf.lowest.date)}</div></div>
-      <div class="kpi glass ${dec && dec.end < 0 ? 'neg' : 'pos'}"><div class="kpi-label">Forventet saldo 31. dec.</div><div class="kpi-value">${dec ? kr(dec.end) : '–'}</div><div class="kpi-sub">Efter årets sidste betalinger</div></div>
-      <div class="kpi glass ${cal.net < 0 ? 'neg' : 'pos'}"><div class="kpi-label">Årets resultat ${year}</div><div class="kpi-value">${krSigned(cal.net)}</div><div class="kpi-sub">Ind ${kr(cal.income, false)} · ud ${kr(cal.expense, false)}</div></div>
+      <div class="kpi glass"><div class="kpi-label">På kontoen nu</div><div class="kpi-value">${kr(startBal)}</div><div class="kpi-sub">${ui.override ? 'din prøve-saldo' : 'den saldo du har skrevet'}</div></div>
+      <div class="kpi glass ${cf.lowest.amount < 0 ? 'neg' : ''}"><div class="kpi-label">Det laveste den kommer ned på</div><div class="kpi-value">${kr(cf.lowest.amount)}</div><div class="kpi-sub">${fmtDate(cf.lowest.date)}</div></div>
+      <div class="kpi glass ${dec && dec.end < 0 ? 'neg' : 'pos'}"><div class="kpi-label">På kontoen nytårsaften</div><div class="kpi-value">${dec ? kr(dec.end) : '–'}</div><div class="kpi-sub">når årets regninger er betalt</div></div>
+      <div class="kpi glass ${cal.net < 0 ? 'neg' : 'pos'}"><div class="kpi-label">Plus/minus i ${year}</div><div class="kpi-value">${krSigned(cal.net)}</div><div class="kpi-sub">ind ${kr(cal.income, false)} · ud ${kr(cal.expense, false)}</div></div>
     </section>
 
+    <div class="result-bar">
+      <h2 class="type-head">Måned for måned</h2>
+      ${exportButtons('cf-exp')}
+    </div>
+    <div class="month-grid">
+      ${cf.months.map((m, i) => {
+        const l = light(m.min);
+        return `<article class="month-card glass ${l} ${ui.open.has(m.ym) ? 'open' : ''}" data-month="${m.ym}">
+          <header><span class="tl">${{ red: '🔴', yellow: '🟡', green: '🟢' }[l]}</span><b>${fmtYm(m.ym, true)}</b>${i === 0 ? '<small class="muted"> (resten af måneden)</small>' : ''}</header>
+          <p>${m.income || m.expense ? `Der kommer <b class="pos">${kr(m.income, false)}</b> ind og går <b>${kr(m.expense, false)}</b> ud.` : 'Ingen betalinger.'}</p>
+          <p>${m.min < 0 ? `<b class="neg">Kontoen er i minus: ${kr(m.min, false)}</b> den ${m.minDay}.` : m.minDay ? `Laveste: <b>${kr(m.min, false)}</b> den ${m.minDay}.` : ''}</p>
+          <p class="muted small">Ved månedens slut: <b>${kr(m.end, false)}</b> · ${ui.open.has(m.ym) ? 'tryk for at skjule' : 'tryk for at se betalingerne'}</p>
+          ${ui.open.has(m.ym) ? eventsHtml(m) : ''}
+        </article>`;
+      }).join('')}
+    </div>
+
     <section class="glass chart-card">
-      <div class="section-head"><h2>Saldo-udvikling</h2><span class="legend"><i class="l-end"></i>Saldo ved månedens udgang <i class="l-min"></i>Laveste punkt i måneden</span></div>
+      <div class="section-head"><h2>Kurven</h2><span class="legend"><i class="l-end"></i>Saldo ved månedens slut <i class="l-min"></i>Laveste punkt i måneden</span></div>
       ${chartSvg(cf.months)}
     </section>
 
-    <section class="glass table-card">
-      <table class="cf-table">
-        <thead><tr><th>Måned</th><th class="num hide-sm">Start</th><th class="num">Ind</th><th class="num">Ud</th><th class="num hide-sm">Netto</th><th class="num">Laveste</th><th class="num">Slut</th></tr></thead>
-        <tbody>
-          ${cf.months.map((m, i) => `
-            <tr class="cf-row ${m.min < 0 ? 'neg' : ''} ${ui.open.has(m.ym) ? 'open' : ''}" data-ym="${m.ym}">
-              <td><span class="chev"></span>${fmtYm(m.ym)}${i === 0 ? ' <small class="muted">(rest)</small>' : ''}</td>
-              <td class="num hide-sm">${kr(m.start, false)}</td>
-              <td class="num pos">${m.income ? kr(m.income, false) : '–'}</td>
-              <td class="num neg">${m.expense ? kr(m.expense, false) : '–'}</td>
-              <td class="num hide-sm">${krSigned(m.net)}</td>
-              <td class="num ${m.min < 0 ? 'neg strong' : ''}">${kr(m.min, false)}${m.minDay ? `<small> d. ${m.minDay}.</small>` : ''}</td>
-              <td class="num strong">${kr(m.end, false)}</td>
-            </tr>
-            ${ui.open.has(m.ym) ? `<tr class="cf-events"><td colspan="7">${eventsHtml(m)}</td></tr>` : ''}`).join('')}
-        </tbody>
-      </table>
-      <p class="muted small pad">Betalinger med betalingsdag i dag eller tidligere i denne måned antages at være trukket. Falder en udgift og en indtægt samme dag, trækkes udgiften først (forsigtig beregning). Klik på en måned for at se hver betaling.</p>
+    <section class="glass card cf-settings">
+      <label class="inline">🟡 Gul advarsel når saldoen kommer under
+        <input id="cf-warn" inputmode="decimal" value="${numToInput(warnBelow)}" class="w-sm" ${canEdit() ? '' : 'disabled'}> kr.</label>
+      <label class="check"><input type="checkbox" id="cf-table" ${ui.table ? 'checked' : ''}> Vis også som tabel</label>
+      ${ui.table ? `<div class="table-card"><table class="cf-table">
+        <thead><tr><th>Måned</th><th class="num">Start</th><th class="num">Ind</th><th class="num">Ud</th><th class="num">Laveste</th><th class="num">Slut</th></tr></thead>
+        <tbody>${cf.months.map((m) => `<tr class="${m.min < 0 ? 'neg' : ''}"><td>${fmtYm(m.ym)}</td><td class="num">${kr(m.start, false)}</td><td class="num">${kr(m.income, false)}</td><td class="num">${kr(m.expense, false)}</td><td class="num">${kr(m.min, false)}</td><td class="num strong">${kr(m.end, false)}</td></tr>`).join('')}</tbody>
+      </table></div>` : ''}
+      <p class="muted small">Regler: betalinger med dato i dag eller tidligere i denne måned regnes som betalt. Falder en regning og en indbetaling samme dag, kommer pengene ind først — ligesom i banken.</p>
     </section>`;
 
-  const exp = { title: `Likviditet · ${state.budget.name}`, accountLabel: ui.account === '__all' ? 'Alle konti' : ui.account, startBalance: startBal, cf, yearEnd: dec ? dec.end : null, calYear: cal, year };
-  bindExportButtons(root, 'cf-exp', { pdf: () => cashflowToPdf(exp), xlsx: () => cashflowToExcel(exp) });
-  root.querySelector('#cf-acc').onchange = (e) => { ui.account = e.target.value; ui.override = ''; render(root); };
-  root.querySelector('#cf-h').onchange = (e) => { ui.horizon = Number(e.target.value); render(root); };
-  root.querySelector('#cf-ov').oninput = (e) => { ui.override = e.target.value; render(root); };
-  root.querySelectorAll('.cf-row').forEach((r) => (r.onclick = () => {
-    const ym = r.dataset.ym;
-    if (ui.open.has(ym)) ui.open.delete(ym); else ui.open.add(ym);
-    render(root);
-  }));
+  const exp = { title: `Likviditet · ${state.budget.name}`, accountLabel: isAll ? 'Alle konti' : ui.account, startBalance: startBal, cf, yearEnd: dec ? dec.end : null, calYear: cal, year };
+  bindExportButtons(out, 'cf-exp', {
+    what: `Oversigt over ${exp.accountLabel} de næste ${ui.horizon} måneder — med hver eneste betaling og saldoen bagefter.`,
+    pdf: () => cashflowToPdf(exp), xlsx: () => cashflowToExcel(exp),
+  });
 }
 
 function eventsHtml(m) {
@@ -110,7 +186,7 @@ function chartSvg(months) {
   const W = 760, H = 240, PL = 64, PR = 16, PT = 16, PB = 30;
   const vals = months.flatMap((m) => [m.start, m.end, m.min]);
   let lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
-  if (hi === lo) hi = lo + 1;
+  if (hi - lo < 1000) hi = lo + 1000; // undgå akser som "1 1 1 0 0" ved små tal
   const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
   const n = months.length;
   const x = (i) => PL + (n === 1 ? (W - PL - PR) / 2 : (i * (W - PL - PR)) / (n - 1));

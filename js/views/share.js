@@ -1,6 +1,6 @@
 // Deling & udskrift: vælg poster med flueben → print-preview eller read-only link (f.eks. til banken).
 import { db, doc, getDoc, setDoc, deleteDoc, updateDoc, serverTimestamp, Timestamp } from '../firebase.js';
-import { state, isAdmin, lists } from '../state.js';
+import { state, isAdmin, lists, isShared } from '../state.js';
 import { esc, kr, krSigned, fmtYm, fmtDate, openModal, toast, copyText, randomId, isoDate } from '../ui.js';
 import { monthly, summarize, projectCashflow, freqLabel, countsInBudget, dateToIndex } from '../calc.js';
 import { logAction } from '../data.js';
@@ -15,6 +15,15 @@ export function openShareDialog() {
   const groups = ['income', 'expense'].map((t) => [t, items.filter((i) => i.type === t).sort((a, b) => (a.category || '').localeCompare(b.category || '', 'da') || a.name.localeCompare(b.name, 'da'))]);
 
   const body = `
+ <div class="share-intro">
+      <p><b>1.</b> Sæt flueben ved de poster, der skal med (private poster er fravalgt). <b>2.</b> Vælg nederst hvad du vil:</p>
+      <ul class="plain small">
+        <li><b>📄 Hent PDF</b> — en færdig side til at printe, gemme eller sende til banken</li>
+        <li><b>📊 Hent Excel</b> — et regneark, hvis du selv vil regne videre</li>
+        <li><b>🖨 Udskriv</b> — direkte til printeren</li>
+        ${isAdmin() ? '<li><b>🔗 Lav link</b> — et link banken kan åbne uden at logge ind (kun de valgte poster)</li>' : ''}
+      </ul>
+    </div>
     <label>Overskrift<input name="title" value="${esc(state.budget.name)} — budgetoversigt ${fmtDate(new Date())}"></label>
     <div class="share-opts">
       <label class="check"><input type="checkbox" name="optSupplier" checked> Vis leverandør</label>
@@ -25,9 +34,9 @@ export function openShareDialog() {
       <label class="check"><input type="checkbox" name="optSelectedTotals" checked> Totaler kun af valgte poster</label>
     </div>
     <div class="share-pick">
-      <div class="row-between"><b>Vælg poster</b><span><button type="button" class="link" data-all>Alle</button> · <button type="button" class="link" data-none>Ingen</button> · <button type="button" class="link" data-nopriv>Skjul private</button></span></div>
+      <div class="row-between"><b>Hvilke poster skal med?</b><span><button type="button" class="link" data-all>Alle</button> · <button type="button" class="link" data-none>Ingen</button> · <button type="button" class="link" data-nopriv>Fravælg private</button></span></div>
       ${groups.map(([t, list]) => list.length ? `<div class="pick-group"><h4>${t === 'income' ? 'Indtægter' : 'Udgifter'}</h4>
-        ${list.map((i) => `<label class="check pick"><input type="checkbox" name="pick" value="${i.id}" data-private="${i.private ? 1 : 0}" ${i.private ? '' : 'checked'}>
+        ${list.map((i) => `<label class="check pick"><input type="checkbox" name="pick" value="${i.id}" data-private="${i.private || !isShared(i) ? 1 : 0}" ${i.private || !isShared(i) ? '' : 'checked'}>
           <span>${esc(i.name)}<small class="muted"> · ${esc(i.category || '')}</small></span><span class="num">${kr(monthly(i))}/md.</span></label>`).join('')}
       </div>` : '').join('')}
     </div>
@@ -41,12 +50,12 @@ export function openShareDialog() {
     return data;
   };
   const buttons = [
-    { label: 'PDF', cls: 'ghost', onClick: async (form) => { await reportToPdf(pick(form)); toast('PDF hentet'); return false; } },
-    { label: 'Excel', cls: 'ghost', onClick: async (form) => { await reportToExcel(pick(form)); toast('Excel-fil hentet'); return false; } },
-    { label: 'Udskriv', cls: 'ghost', onClick: (form) => { printReport(pick(form)); return false; } },
+    { label: '📄 Hent PDF', cls: 'ghost', onClick: async (form) => { await reportToPdf(pick(form)); toast('PDF hentet'); return false; } },
+    { label: '📊 Hent Excel', cls: 'ghost', onClick: async (form) => { await reportToExcel(pick(form)); toast('Excel-fil hentet'); return false; } },
+    { label: '🖨 Udskriv', cls: 'ghost', onClick: (form) => { printReport(pick(form)); return false; } },
   ];
   if (isAdmin()) {
-    buttons.push({ label: '🔗 Opret read-only link', cls: 'primary', onClick: async (form) => {
+    buttons.push({ label: '🔗 Lav link', cls: 'primary', onClick: async (form) => {
       const data = buildReport(form);
       if (!data.sections.some((s) => s.items.length)) { toast('Vælg mindst én post', 'error'); return false; }
       const days = Number(form.expires.value);
@@ -55,7 +64,7 @@ export function openShareDialog() {
   }
 
   openModal({
-    title: 'Del, eksportér eller udskriv', body, wide: true, buttons,
+    title: 'Hent / del budgettet', body, wide: true, buttons,
     onOpen: (form) => {
       const upd = () => {
         const n = form.querySelectorAll('[name=pick]:checked').length;

@@ -1,12 +1,12 @@
 // Service worker: gør BudgetBasen installerbar og åbner hurtigt / offline.
 // Data synkroniseres af Firestore selv (offline-cache) — her caches kun app-filerne.
 // Hæv VERSION når du uploader nye filer, så telefonerne henter den nye udgave.
-const VERSION = 'bb-v2';
+const VERSION = 'bb-v3';
 const SHELL = [
   './', './index.html', './style.css', './app.js', './firebase-config.js', './manifest.json',
   './js/firebase.js', './js/calc.js', './js/ui.js', './js/state.js', './js/data.js', './js/files.js', './js/forms.js',
   './js/views/budget.js', './js/views/cashflow.js', './js/views/receipts.js', './js/views/documents.js',
-  './js/views/admin.js', './js/views/share.js', './js/views/compare.js', './js/export.js',
+  './js/views/admin.js', './js/views/share.js', './js/views/compare.js', './js/export.js', './js/help.js',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png',
 ];
 

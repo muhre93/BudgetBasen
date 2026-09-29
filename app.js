@@ -7,7 +7,8 @@ import {
 } from './js/firebase.js';
 import { state, emit, onChange, roleLabel } from './js/state.js';
 import { $, $$, esc, toast, errorToast, lsGet, lsSet, firstName, confirmDialog } from './js/ui.js';
-import { createBudget, loadMyInvites, acceptInvite, declineInvite, ensureAutoSnapshot } from './js/data.js';
+import { createBudget, loadMyInvites, acceptInvite, declineInvite, ensureAutoSnapshot, watchVisible } from './js/data.js';
+import { maybeShowWelcome } from './js/help.js';
 import * as budgetView from './js/views/budget.js';
 import * as cashflowView from './js/views/cashflow.js';
 import * as receiptsView from './js/views/receipts.js';
@@ -123,16 +124,18 @@ function selectBudget(id) {
     state.budgetId = id;
     lsSet('bb:lastBudget', id);
     let firstItems = true;
-    state.unsubs.items = onSnapshot(collection(db, 'budgets', id, 'items'), (snap) => {
-      state.items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    // Kun de poster brugeren må se (delte + dem der er delt med én selv)
+    state.unsubs.items = watchVisible('items', (rows) => {
+      state.items = rows;
       state.itemsLoaded = true;
       emit();
       if (firstItems) { firstItems = false; ensureAutoSnapshot(); }
-    }, errorToast);
+    });
   }
   state.budget = b;
   renderSwitcher();
   emit();
+  maybeShowWelcome();
 }
 
 function renderSwitcher() {
@@ -167,6 +170,7 @@ function render() {
   const a = document.activeElement;
   const focusId = a && main.contains(a) ? a.id : null;
   const pos = focusId && typeof a.selectionStart === 'number' ? a.selectionStart : null;
+  if (main.dataset.view !== state.view || main.dataset.budget !== state.budgetId) { main.dataset.shell = ''; main.dataset.view = state.view; main.dataset.budget = state.budgetId; }
   try { VIEWS[state.view].render(main); } catch (e) { console.error(e); main.innerHTML = `<div class="empty glass"><p>Der skete en fejl: ${esc(e.message)}</p></div>`; }
   if (focusId) { const n = document.getElementById(focusId); if (n) { n.focus(); if (pos !== null) try { n.setSelectionRange(pos, pos); } catch { /* ikke tekstfelt */ } } }
 }

@@ -107,13 +107,13 @@ t('likviditet: sept medtager kun resterende dage', () => {
   assert.equal(cf.months[0].end, -50);
 });
 
-t('likviditet: samme dag trækkes udgift før indtægt', () => {
+t('likviditet: samme dag kommer penge ind før penge ud', () => {
   const items = [
-    { type: 'income', amount: 500, freq: 1, payDay: 1 },
     { type: 'expense', amount: 500, freq: 1, payDay: 1 },
+    { type: 'income', amount: 500, freq: 1, payDay: 1 },
   ];
   const cf = projectCashflow(items, 0, D(2026, 9, 29), 2);
-  assert.equal(cf.months[1].min, -500);
+  assert.equal(cf.months[1].min, 0, 'overførslen dækker regningen samme dag');
   assert.equal(cf.months[1].end, 0);
 });
 
@@ -148,3 +148,44 @@ t('frekvens-label fallback', () => {
 });
 
 console.log(`\n${passed} tests bestået.`);
+
+// ---------- Fordeling pr. person ----------
+import { shareOf, personSummary } from '../js/calc.js';
+t('fælleskonto → hele posten er fælles', () => {
+  const r = shareOf({ amount: 1200, freq: 3, account: 'Fælleskonto', split: { Mike: 50 } }, ['Fælleskonto']);
+  assert.ok(r.joint); close(r.parts['Fælles'], 400, 'fælles');
+});
+t('procent pr. post (normaliseres)', () => {
+  const r = shareOf({ amount: 1000, freq: 1, account: 'Lønkonto', split: { Mike: 60, Maria: 40 } }, ['Fælleskonto']);
+  close(r.parts.Mike, 600, 'Mike'); close(r.parts.Maria, 400, 'Maria');
+  const r2 = shareOf({ amount: 900, freq: 1, split: { Mike: 1, Maria: 2 } });
+  close(r2.parts.Mike, 300, 'norm Mike'); close(r2.parts.Maria, 600, 'norm Maria');
+});
+t('uden split → 100 % til hvem', () => {
+  close(shareOf({ amount: 500, freq: 1, who: 'Maria' }).parts.Maria, 500, 'Maria');
+  assert.ok(shareOf({ amount: 500, freq: 1, who: 'Fælles' }).joint);
+  assert.ok(shareOf({ amount: 500, freq: 1 }).joint);
+});
+t('person-overblik inkl. andel af fælleskonto', () => {
+  const items = [
+    { type: 'income', amount: 30000, freq: 1, who: 'Mike', account: 'Lønkonto' },
+    { type: 'income', amount: 20000, freq: 1, who: 'Maria', account: 'Lønkonto' },
+    { type: 'income', amount: 1000, freq: 1, who: 'Fælles', account: 'Fælleskonto' },   // børnepenge direkte til fælles
+    { type: 'expense', amount: 9000, freq: 1, account: 'Fælleskonto' },                  // husleje
+    { type: 'expense', amount: 1200, freq: 12, account: 'Fælleskonto' },                 // forsikring 100/md
+    { type: 'expense', amount: 300, freq: 1, account: 'Lønkonto', split: { Mike: 50, Maria: 50 } },
+    { type: 'expense', amount: 400, freq: 1, account: 'Lønkonto', who: 'Mike' },
+  ];
+  const s = personSummary(items, { jointAccounts: ['Fælleskonto'], jointSplit: { Mike: 60, Maria: 40 }, people: ['Mike', 'Maria', 'Fælles'] });
+  close(s.joint.expense, 9100, 'fælles ud'); close(s.joint.need, 8100, 'skal overføres');
+  const mike = s.persons.find((p) => p.name === 'Mike'), maria = s.persons.find((p) => p.name === 'Maria');
+  close(mike.ownExpense, 550, 'Mike egne'); close(mike.jointContribution, 4860, 'Mike fælles 60%'); close(mike.totalOut, 5410, 'Mike i alt');
+  close(maria.ownExpense, 150, 'Maria egne'); close(maria.jointContribution, 3240, 'Maria fælles 40%'); close(maria.left, 20000 - 3390, 'Maria tilbage');
+  // Kontrol: alt der går ud = egne + fælles; det samme beløb skal findes i personernes totaler + fælles-indtægt
+  close(mike.totalOut + maria.totalOut + s.joint.income, 9100 + 300 + 400, 'balancerer');
+});
+t('fælles deles ligeligt uden indstilling', () => {
+  const s = personSummary([{ type: 'expense', amount: 1000, freq: 1, account: 'F' }], { jointAccounts: ['F'], people: ['A', 'B', 'Fælles'] });
+  close(s.persons[0].jointContribution, 500, 'A'); close(s.persons[1].jointContribution, 500, 'B');
+});
+console.log(`${passed} tests bestået i alt.`);

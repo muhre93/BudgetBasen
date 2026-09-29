@@ -66,6 +66,7 @@ export function toast(msg, type = 'ok', ms = 3200) {
   el.className = `toast ${type}`;
   el.textContent = msg;
   root.appendChild(el);
+  while (root.children.length > 2) root.firstElementChild.remove(); // maks. 2 beskeder ad gangen
   requestAnimationFrame(() => el.classList.add('show'));
   setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, ms);
 }

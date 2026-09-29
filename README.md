@@ -22,7 +22,8 @@ budgetbasen/
 │   ├── data.js             Al læsning/skrivning i Firestore + log
 │   ├── files.js            Billedkomprimering + upload/åbn/slet via Worker'en
 │   ├── export.js           PDF (jsPDF) og Excel (SheetJS) — hentes først ved klik
-│   ├── forms.js            Dropdowns med "+ Tilføj ny…"
+│   ├── forms.js            Dropdowns med "+ Tilføj ny…", synlighed og %-fordeling
+│   ├── help.js             ?-forklaringer og velkomstguide
 │   ├── state.js            Fælles tilstand, roller, standardlister
 │   ├── ui.js               Formatering (kr., datoer), modaler, toasts
 │   └── views/
@@ -33,7 +34,7 @@ budgetbasen/
 │       ├── admin.js        Budgetter, medlemmer, lister, links, versioner, log, eksport
 │       ├── share.js        Del/udskriv + offentlig read-only visning
 │       └── compare.js      Sammenligning af versioner/budgetter
-└── tests/                  13 beregnings-tests + 8 sikkerhedstests af Worker'en
+└── tests/                  18 beregnings-tests + 9 sikkerhedstests af Worker'en
 ```
 
 ---
@@ -61,6 +62,35 @@ Foretrækker du at deploye fra GitHub (som din pbm-worker), så læg mappen `wor
 
 **Gratis-grænser på Workers KV (Free-plan):** ca. 1 GB lager i alt, op til 25 MB pr. fil (appen tillader 10 MB) og 1.000 uploads/sletninger om dagen. Billeder komprimeres automatisk til typisk 200–400 KB, så der er plads til flere tusinde kvitteringer.
 
+### 2b. Invitationsmails (EmailJS — gratis, intet kort, ca. 5 min.)
+Mails sendes fra **din** Gmail, uanset hvem i familien der trykker "Invitér". De andre skal ikke sætte noget op. Gratis op til 200 mails/md.
+
+1. Gå til <https://www.emailjs.com> → **Sign up** (log ind med Google).
+2. **Email Services → Add New Service → Gmail → Connect Account** → vælg muhre93@gmail.com → **Create Service**. Notér **Service ID** (fx `service_abc123`).
+3. **Email Templates → Create New Template**:
+   - **Subject:** `{{inviter_name}} har inviteret dig til BudgetBasen`
+   - **To Email:** `{{to_email}}` · **Reply To:** `{{reply_to}}` · **From Name:** `BudgetBasen`
+   - **Content:**
+     ```
+     Hej!
+
+     {{inviter_name}} har inviteret dig til budgettet "{{budget_name}}" i BudgetBasen som {{role_text}}.
+
+     Sådan gør du:
+     1. Åbn {{app_url}}
+     2. Log ind med Google — brug den mail, som denne besked er sendt til.
+     3. Tryk "Acceptér" øverst.
+
+     Venlig hilsen
+     {{inviter_name}}
+     ```
+   - **Save**. Notér **Template ID** (fx `template_xyz789`).
+4. **Account → General**: kopiér **Public Key**. **Account → Security**: slå **"Allow EmailJS API for non-browser applications"** til, og kopiér **Private Key**.
+5. Cloudflare → din Worker → **Settings → Variables and Secrets → Add**, type **Secret**, fire gange:
+   `EMAILJS_SERVICE_ID`, `EMAILJS_TEMPLATE_ID`, `EMAILJS_PUBLIC_KEY`, `EMAILJS_PRIVATE_KEY` → **Deploy**.
+
+Uden disse virker appen stadig — så står der "Egen mail" ved invitationen, som åbner din mail-app med en færdigskrevet besked.
+
 ### 3. Indsæt din konfiguration
 Åbn `firebase-config.js` og erstat værdierne med dem fra trin 1.4, og indsæt Worker-adressen fra trin 2.5 i `FILES_WORKER_URL`. `apiKey` er ikke en hemmelighed — det er helt fint, at den ligger offentligt på GitHub. Sikkerheden ligger i reglerne (trin 5) og i Worker'ens adgangstjek.
 
@@ -83,6 +113,8 @@ Foretrækker du at deploye fra GitHub (som din pbm-worker), så læg mappen `wor
 - **Roller:** *Kun læse* kan intet ændre. *Redaktør* kan ændre poster, kvitteringer, dokumenter og saldo — men ikke medlemmer, og kan ikke slette versioner. *Admin* kan alt, men **ejeren kan aldrig fjernes eller degraderes**, og ejerskab kan ikke overtages.
 - **Loggen** kan ingen redigere eller slette (undtagen når ejeren sletter hele budgettet).
 - **Delte links** (`shares/{token}`) kan læses af alle med det 28-tegns tilfældige link, men ingen kan *liste* eller søge i dem, og de udløber automatisk efter den valgte periode. Linket er et øjebliksbillede — det indeholder kun de poster, du satte flueben ved.
+- **Private poster:** Hver post, kvittering og hvert dokument har "Hvem må se den?". Reglerne sender kun det, man må se — heller ikke admin eller ejer kan se andres private ting. Loggen viser private ting uden navn. Versioner (til sammenligning) indeholder kun delte poster.
+- **Invitationsmails:** Worker'en sender kun mail for rigtige invitationer oprettet af en admin, og linket i mailen kan kun pege på jeres egne sider (ALLOWED_ORIGINS) — så den kan ikke misbruges til spam eller phishing.
 - **Filer (Cloudflare Worker):** Worker'en har ingen hemmelige nøgler. Ved hver upload, visning og sletning sender appen brugerens Firebase-login-token med, og Worker'en slår budgettet op i Firestore *med det token* — så de samme Firestore-regler afgør adgangen. Læsere kan se filer, redaktører/admins kan uploade og slette, og kun ejeren kan slette alle filer på én gang. Ikke-medlemmer, udløbne logins, forkerte projekter, fremmede websites (CORS) og andre filtyper end billeder/PDF afvises. Der findes ingen offentlige fil-links.
 - **Validering:** Budgetposter afvises, hvis type, beløb, frekvens eller betalingsdag er ugyldige.
 
@@ -96,8 +128,20 @@ Foretrækker du at deploye fra GitHub (som din pbm-worker), så læg mappen `wor
 - **Beløb pr. post = beløb pr. betaling.** Frekvens = antal måneder mellem betalinger. **Pr. måned = beløb ÷ frekvens**, pr. år = pr. måned × 12. Eksempel: 1.200 kr. hver 3. måned = 400 kr./md. = 4.800 kr./år.
 - **"Første/næste betaling"** (måned) + **betalingsdag** bestemmer præcis, i hvilke måneder og på hvilken dag pengene går. Dag 31 bliver automatisk til 30./28./29. i korte måneder.
 - **Overskud pr. md.** = alle aktive indtægter − udgifter (normaliseret pr. måned). **Årets resultat** vises både normaliseret (×12) og som *faktiske* betalinger i kalenderåret.
-- **Likviditet** simulerer saldoen betaling for betaling — ikke bare månedstotaler — så man ser hvis kontoen går i minus den 1., selvom lønnen kommer den 25. Beregnes i hele øre (ingen afrundingsfejl). Samme dag: udgifter trækkes før indtægter (forsigtigt). Betalinger med betalingsdag i dag eller tidligere i indeværende måned regnes som allerede trukket.
+- **Likviditet** simulerer saldoen betaling for betaling — ikke bare månedstotaler — så man ser hvis kontoen går i minus den 1., selvom lønnen kommer den 25. Beregnes i hele øre (ingen afrundingsfejl). Samme dag: penge ind før penge ud (som bankerne gør med faste overførsler og Betalingsservice). Betalinger med betalingsdag i dag eller tidligere i indeværende måned regnes som allerede trukket.
 - **Budgetkonto "Bør stå":** for hver udgift på kontoen: beløb × (frekvens − måneder til næste betaling) ÷ frekvens. Forudsætter at den månedlige overførsel lander den 1. Eksempel: årlig forsikring på 1.200 kr. betalt i marts → i september bør der stå 600 kr. Appen viser overskud/manko og den anbefalede månedlige overførsel.
+
+## Nyt i version 3
+- **Hvem betaler hvad:** kort pr. person med "skal af med i alt", egne regninger + andel til fælleskontoen, penge ind og hvad der er tilbage. Procent-fordeling pr. post; poster på en fælleskonto er automatisk fælles. Fordelingen af det fælleskontoen mangler, og hvilke konti der er fælles, rettes med "Ret fordeling".
+- **Privat / synlighed:** "Hvem må se den?" (Alle / Kun mig / Udvalgte) på poster, kvitteringer og dokumenter + standard for nye poster (fx kun de voksne). "🔒 Nyt privat budget" til egen opsparing.
+- **Filter-knap** på Budget og Kvitteringer; søgning sker for hvert bogstav uden at tastaturet lukker.
+- **Historik:** når du retter en post, står "Før: …" ved feltet, og hver post har sin egen historik. Sammenligning viser hele budgettet side om side (før | nu | forskel) med en sætning i hverdagssprog.
+- **Invitationer** sendes automatisk på mail og viser *Afventer* → *Godkendt ✓*.
+- **Likviditet** i hverdagssprog: trafiklys, månedskort, forslag om at tilføje den månedlige overførsel, justerbar gul grænse.
+- **Hent / del**: én knap med forklaring af PDF og Excel.
+- **?-knapper** og velkomstguide; kvitteringer har egne lister (butikker, kategorier); bedre mobil-layout.
+
+**Opdatering fra version 2:** upload alle filer til GitHub igen, sæt de nye `firestore.rules` ind og udgiv dem, og indsæt den nye Worker-kode i Cloudflare. Firestore-regler og Worker skal opdateres, ellers kan appen ikke se posterne.
 
 ## Ekstra funktioner, jeg har tilføjet
 - **Budgetkonto-tjek** ("Bør stå / Overskud / Mangler") pr. konto — den klassiske danske budgetkonto-beregning.
@@ -120,4 +164,4 @@ Foretrækker du at deploye fra GitHub (som din pbm-worker), så læg mappen `wor
 - **Offline**: appen åbner uden net, og ændringer synkroniseres, når der er forbindelse igen.
 
 ## Opdateringer
-Når du ændrer filer, så hæv `VERSION` i `sw.js` (f.eks. `bb-v3`), så installerede telefoner henter den nye udgave.
+Når du ændrer filer, så hæv `VERSION` i `sw.js` (nu `bb-v3`, næste gang `bb-v4`), så installerede telefoner henter den nye udgave.
