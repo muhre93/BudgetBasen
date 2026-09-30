@@ -1,8 +1,8 @@
 // Likviditet: "Er der penge nok på kontoen, når regningerne skal betales?"
 // Hver betaling gennemgås dag for dag. Vises som månedskort med trafiklys i hverdagssprog.
-import { state, lists, canEdit } from '../state.js';
+import { state, lists, canEdit, savingsAccounts } from '../state.js';
 import { esc, kr, krSigned, fmtYm, fmtDate, parseAmount, numToInput, toast } from '../ui.js';
-import { projectCashflow, calendarYear, requiredBalance } from '../calc.js';
+import { projectCashflow, calendarYear, requiredBalance, touchesAccount, flowOf } from '../calc.js';
 import { exportButtons, bindExportButtons, cashflowToPdf, cashflowToExcel } from '../export.js';
 import { helpBtn } from '../help.js';
 import { budgetRef } from '../data.js';
@@ -14,7 +14,7 @@ const ui = { account: null, horizon: 12, override: '', open: new Set(), table: f
 
 function accountsInUse() {
   const balances = state.budget.settings?.balances || [];
-  return [...new Set([...balances.map((b) => b.account), ...state.items.map((i) => i.account).filter(Boolean)])];
+  return [...new Set([...balances.map((b) => b.account), ...state.items.flatMap((i) => [i.account, i.toAccount]).filter(Boolean)])];
 }
 
 export function render(root) {
@@ -63,7 +63,8 @@ export function render(root) {
       }
       if (e.target.closest('#cf-add-transfer')) {
         const r = requiredBalance(state.items, ui.account);
-        openItemModal({ type: 'income', name: `Overførsel til ${ui.account}`, amount: Math.ceil(r.monthlyTransfer / 100) * 100, freq: 1, payDay: 1, account: ui.account, category: 'Opsparing', active: true, startMonth: new Date().toISOString().slice(0, 7) });
+        const from = accountsInUse().find((a) => a !== ui.account && !savingsAccounts().includes(a)) || 'Lønkonto';
+        openItemModal({ type: 'transfer', name: `Overførsel til ${ui.account}`, amount: Math.ceil(r.monthlyTransfer / 100) * 100, freq: 1, payDay: 1, account: from, toAccount: ui.account, category: 'Overførsler', active: true, startMonth: new Date().toISOString().slice(0, 7), visibleTo: ['all'] });
       }
     });
     w.addEventListener('change', async (e) => {
@@ -87,13 +88,14 @@ function update(root) {
   const baseBal = isAll ? balances.reduce((s, b) => s + (Number(b.amount) || 0), 0) : Number(bal?.amount) || 0;
   const ov = parseAmount(ui.override);
   const startBal = ui.override.trim() !== '' && !Number.isNaN(ov) ? ov : baseBal;
-  const items = isAll ? state.items : state.items.filter((i) => (i.account || '') === ui.account);
-  const hasIncome = items.some((i) => i.type === 'income' && i.active !== false);
-  const hasExpense = items.some((i) => i.type === 'expense' && i.active !== false);
+  const items = isAll ? state.items : state.items.filter((i) => touchesAccount(i, ui.account));
+  const flowOpts = { account: isAll ? null : ui.account };
+  const hasIncome = items.some((i) => i.active !== false && flowOf(i, flowOpts).sign > 0);
+  const hasExpense = items.some((i) => i.active !== false && flowOf(i, flowOpts).sign < 0);
 
   root.querySelector('#cf-explain').innerHTML = isAll
-    ? 'Alle jeres konti regnes som én stor pengekasse: al løn ind, alle regninger ud.'
-    : `Viser kun de regninger der trækkes fra <b>${esc(ui.account)}</b>, og de penge der sættes ind på den. Startsaldoen er ${bal ? `den du skrev ${fmtDate(bal.date)}` : '0 kr. (du har ikke skrevet en saldo endnu)'}.`;
+    ? 'Alle jeres konti regnes som én stor pengekasse: al løn ind, alle regninger ud. Overførsler mellem jeres egne konti tæller ikke — pengene bliver jo i familien.'
+    : `Viser kun det, der går ind og ud af <b>${esc(ui.account)}</b> — regninger, løn og overførsler til/fra jeres andre konti. Startsaldoen er ${bal ? `den du skrev ${fmtDate(bal.date)}` : '0 kr. (du har ikke skrevet en saldo endnu)'}.`;
 
   const out = root.querySelector('#cf-results');
   if (!items.length) {
@@ -101,10 +103,10 @@ function update(root) {
     return;
   }
 
-  const cf = projectCashflow(items, startBal, today, ui.horizon);
+  const cf = projectCashflow(items, startBal, today, ui.horizon, flowOpts);
   const year = today.getFullYear();
   const dec = cf.months.find((m) => m.ym === `${year}-12`);
-  const cal = calendarYear(items, year);
+  const cal = isAll ? calendarYear(items, year) : calendarYear(items, year, flowOpts);
   const light = (min) => (min < 0 ? 'red' : min < warnBelow ? 'yellow' : 'green');
   const worst = cf.months.reduce((w, m) => (m.min < w.min ? m : w), cf.months[0]);
   const status = light(worst.min);
@@ -122,7 +124,7 @@ function update(root) {
   out.innerHTML = `
     ${banner}
     ${needsTransfer ? `<div class="hint warn">💡 Der går ingen penge <i>ind</i> på ${esc(ui.account)} i budgettet — derfor ser det ud som om kontoen løber tør.
-      Tilføj den faste månedlige overførsel, så bliver beregningen rigtig.
+      Tilføj den faste månedlige overførsel (fx fra lønkontoen), så bliver beregningen rigtig.
       ${canEdit() ? '<br><button class="btn small primary" id="cf-add-transfer" type="button" style="margin-top:.5rem">＋ Tilføj månedlig overførsel</button>' : ''}</div>` : ''}
 
     <section class="kpis">

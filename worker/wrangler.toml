@@ -9,5 +9,5 @@ binding = "FILES"
 id = "INDSÆT_KV_NAMESPACE_ID"   # Storage & Databases → KV → kopiér ID
 
 [vars]
-FIREBASE_PROJECT_ID = "DIT-PROJEKT"
-ALLOWED_ORIGINS = "https://kronborg1980.github.io"
+FIREBASE_PROJECT_ID = "budgetbasen"
+ALLOWED_ORIGINS = "https://muhre93.github.io,https://kronborg1980.github.io"

@@ -106,7 +106,8 @@ service cloud.firestore {
         allow delete: if canEdit(bid) && canSee(resource.data);
       }
       function validItem(d) {
-        return d.type in ['expense', 'income']
+        return d.type in ['expense', 'income', 'transfer']
+          && (d.type != 'transfer' || (d.toAccount is string && d.toAccount.size() > 0))
           && d.name is string && d.name.size() > 0 && d.name.size() <= 120
           && d.amount is number && d.amount >= 0 && d.amount < 100000000
           && d.freq is int && d.freq >= 1 && d.freq <= 120

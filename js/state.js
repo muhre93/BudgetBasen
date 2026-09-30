@@ -90,6 +90,14 @@ export function jointAccounts() {
   return Array.isArray(j) ? j : ['Budgetkonto', 'Fælleskonto'];
 }
 
+/** Konti der er opsparing (overførsler hertil trækkes fra "tilbage af lønnen"). */
+export function savingsAccounts() {
+  const s = state.budget?.settings?.savingsAccounts;
+  return Array.isArray(s) ? s : ['Opsparingskonto'];
+}
+export const TYPE_LABEL = { income: 'Indtægt', expense: 'Udgift', transfer: 'Overførsel' };
+export const TYPE_PLURAL = { income: 'Indtægter', expense: 'Udgifter', transfer: 'Opsparing & overførsler' };
+
 // ---------- Simpel event-bus ----------
 const listeners = new Set();
 export const onChange = (fn) => listeners.add(fn);

@@ -1,6 +1,6 @@
 // Deling & udskrift: vælg poster med flueben → print-preview eller read-only link (f.eks. til banken).
 import { db, doc, getDoc, setDoc, deleteDoc, updateDoc, serverTimestamp, Timestamp } from '../firebase.js';
-import { state, isAdmin, lists, isShared } from '../state.js';
+import { state, isAdmin, lists, isShared, savingsAccounts } from '../state.js';
 import { esc, kr, krSigned, fmtYm, fmtDate, openModal, toast, copyText, randomId, isoDate } from '../ui.js';
 import { monthly, summarize, projectCashflow, freqLabel, countsInBudget, dateToIndex } from '../calc.js';
 import { logAction } from '../data.js';
@@ -12,7 +12,7 @@ export function openShareDialog() {
   const now = dateToIndex(new Date());
   const items = state.items.filter((i) => countsInBudget(i, now));
   const L = lists();
-  const groups = ['income', 'expense'].map((t) => [t, items.filter((i) => i.type === t).sort((a, b) => (a.category || '').localeCompare(b.category || '', 'da') || a.name.localeCompare(b.name, 'da'))]);
+  const groups = ['income', 'expense', 'transfer'].map((t) => [t, items.filter((i) => i.type === t).sort((a, b) => (a.category || '').localeCompare(b.category || '', 'da') || a.name.localeCompare(b.name, 'da'))]);
 
   const body = `
  <div class="share-intro">
@@ -35,7 +35,7 @@ export function openShareDialog() {
     </div>
     <div class="share-pick">
       <div class="row-between"><b>Hvilke poster skal med?</b><span><button type="button" class="link" data-all>Alle</button> · <button type="button" class="link" data-none>Ingen</button> · <button type="button" class="link" data-nopriv>Fravælg private</button></span></div>
-      ${groups.map(([t, list]) => list.length ? `<div class="pick-group"><h4>${t === 'income' ? 'Indtægter' : 'Udgifter'}</h4>
+      ${groups.map(([t, list]) => list.length ? `<div class="pick-group"><h4>${{ income: 'Indtægter', expense: 'Udgifter', transfer: 'Opsparing & overførsler' }[t]}</h4>
         ${list.map((i) => `<label class="check pick"><input type="checkbox" name="pick" value="${i.id}" data-private="${i.private || !isShared(i) ? 1 : 0}" ${i.private || !isShared(i) ? '' : 'checked'}>
           <span>${esc(i.name)}<small class="muted"> · ${esc(i.category || '')}</small></span><span class="num">${kr(monthly(i))}/md.</span></label>`).join('')}
       </div>` : '').join('')}
@@ -90,17 +90,17 @@ function buildReport(form) {
     note: form.optNote.checked, cashflow: form.optCashflow.checked, selectedTotals: form.optSelectedTotals.checked,
   };
   const basis = opts.selectedTotals ? sel : all;
-  const s = summarize(basis);
+  const s = summarize(basis, new Date(), { savingsAccounts: savingsAccounts() });
   const sections = [];
-  for (const type of ['income', 'expense']) {
+  for (const type of ['income', 'expense', 'transfer']) {
     const byCat = new Map();
     for (const i of sel.filter((x) => x.type === type)) {
-      const c = i.category || 'Uden kategori';
+      const c = i.category || (type === 'transfer' ? 'Opsparing' : 'Uden kategori');
       if (!byCat.has(c)) byCat.set(c, []);
       byCat.get(c).push({
         name: i.name, amount: i.amount, freqLabel: freqLabel(i.freq, L.frequencies), monthly: Math.round(monthly(i) * 100) / 100,
         supplier: opts.supplier ? i.supplier || '' : '', who: opts.who ? i.who || '' : '',
-        account: opts.account ? i.account || '' : '', note: opts.note ? i.note || '' : '',
+        account: opts.account ? (type === 'transfer' ? `${i.account} → ${i.toAccount}` : i.account || '') : '', note: opts.note ? i.note || '' : '',
       });
     }
     for (const [cat, items] of [...byCat.entries()].sort((a, b) => a[0].localeCompare(b[0], 'da'))) {
@@ -114,7 +114,7 @@ function buildReport(form) {
   }
   return {
     title: form.title.value.trim() || state.budget.name, generated: isoDate(), opts,
-    totals: { income: s.income, expense: s.expense, net: s.net, yearNet: s.yearNet },
+    totals: { income: s.income, expense: s.expense, saving: s.saving, net: s.net, yearNet: s.yearNet },
     sections, cashflow,
   };
 }
@@ -135,11 +135,13 @@ export function reportHtml(r) {
     <section class="r-kpis">
       <div><span>Indtægter pr. md.</span><b>${kr(r.totals.income)}</b></div>
       <div><span>Udgifter pr. md.</span><b>${kr(r.totals.expense)}</b></div>
-      <div><span>Rådighed pr. md.</span><b>${kr(r.totals.net)}</b></div>
-      <div><span>Pr. år</span><b>${kr(r.totals.yearNet, false)}</b></div>
+      ${r.totals.saving ? `<div><span>Opsparing pr. md.</span><b>${kr(r.totals.saving)}</b></div>` : ''}
+      <div><span>Tilbage pr. md.</span><b>${kr(r.totals.net)}</b></div>
+      <div><span>Tilbage pr. år</span><b>${kr(r.totals.yearNet, false)}</b></div>
     </section>
     ${r.sections.some((s) => s.type === 'income') ? `<h2>Indtægter</h2><table class="r-table">${head}${sec('income')}</table>` : ''}
     ${r.sections.some((s) => s.type === 'expense') ? `<h2>Udgifter</h2><table class="r-table">${head}${sec('expense')}</table>` : ''}
+    ${r.sections.some((s) => s.type === 'transfer') ? `<h2>Opsparing & overførsler</h2><table class="r-table">${head}${sec('transfer')}</table>` : ''}
     ${r.cashflow ? `<h2>Likviditet næste 12 måneder</h2><table class="r-table">
       <tr><th>Måned</th><th class="num">Start</th><th class="num">Ind</th><th class="num">Ud</th><th class="num">Laveste</th><th class="num">Slut</th></tr>
       ${r.cashflow.map((m) => `<tr><td>${fmtYm(m.ym)}</td><td class="num">${kr(m.start, false)}</td><td class="num">${kr(m.income, false)}</td><td class="num">${kr(m.expense, false)}</td><td class="num">${kr(m.min, false)}</td><td class="num">${kr(m.end, false)}</td></tr>`).join('')}

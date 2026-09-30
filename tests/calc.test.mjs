@@ -107,7 +107,7 @@ t('likviditet: sept medtager kun resterende dage', () => {
   assert.equal(cf.months[0].end, -50);
 });
 
-t('likviditet: samme dag kommer penge ind før penge ud', () => {
+t('likviditet: samme dag kommer indtægter før udgifter', () => {
   const items = [
     { type: 'expense', amount: 500, freq: 1, payDay: 1 },
     { type: 'income', amount: 500, freq: 1, payDay: 1 },
@@ -187,5 +187,70 @@ t('person-overblik inkl. andel af fælleskonto', () => {
 t('fælles deles ligeligt uden indstilling', () => {
   const s = personSummary([{ type: 'expense', amount: 1000, freq: 1, account: 'F' }], { jointAccounts: ['F'], people: ['A', 'B', 'Fælles'] });
   close(s.persons[0].jointContribution, 500, 'A'); close(s.persons[1].jointContribution, 500, 'B');
+});
+
+// ---------- Overførsler & opsparing ----------
+import { flowOf, touchesAccount } from '../js/calc.js';
+const FAM = [
+  { type: 'income', name: 'Løn', amount: 50000, freq: 1, payDay: 25, account: 'Lønkonto' },
+  { type: 'transfer', name: 'Til budgetkonto', amount: 9500, freq: 1, payDay: 1, account: 'Lønkonto', toAccount: 'Budgetkonto' },
+  { type: 'transfer', name: 'Opsparing', amount: 3000, freq: 1, payDay: 1, account: 'Lønkonto', toAccount: 'Opsparingskonto' },
+  { type: 'expense', name: 'Husleje', amount: 9100, freq: 1, payDay: 1, account: 'Budgetkonto' },
+  { type: 'expense', name: 'Mad', amount: 28900, freq: 1, payDay: 1, account: 'Lønkonto' },
+];
+const SAV = { savingsAccounts: ['Opsparingskonto'] };
+t('samlet: opsparing trækkes fra, overførsel mellem brugskonti tæller ikke', () => {
+  const s = summarize(FAM, D(2026, 9, 29), SAV);
+  close(s.income, 50000, 'ind'); close(s.expense, 38000, 'ud'); close(s.saving, 3000, 'opsparing');
+  close(s.net, 9000, 'tilbage af lønnen = 50000 − 38000 − 3000');
+});
+t('budgetkonto: kun det der går ind/ud af kontoen — opsparing rører den ikke', () => {
+  const s = summarize(FAM, D(2026, 9, 29), { account: 'Budgetkonto', ...SAV });
+  close(s.income, 9500, 'overførsel ind'); close(s.expense, 9100, 'husleje'); close(s.saving, 0, 'ingen opsparing'); close(s.net, 400, 'tilbage på budgetkontoen');
+});
+t('lønkonto: overførsler ud er minus', () => {
+  const s = summarize(FAM, D(2026, 9, 29), { account: 'Lønkonto', ...SAV });
+  close(s.income, 50000, 'løn'); close(s.expense, 9500 + 3000 + 28900, 'ud'); close(s.net, 8600, 'lønkonto: 50000 − 9500 − 3000 − 28900');
+});
+t('opsparingskonto: vokser med overførslen', () => {
+  const s = summarize(FAM, D(2026, 9, 29), { account: 'Opsparingskonto', ...SAV });
+  close(s.income, 3000, 'ind'); close(s.net, 3000, 'vokser');
+});
+t('hævning fra opsparing tæller som plus i det samlede', () => {
+  const r = flowOf({ type: 'transfer', account: 'Opsparingskonto', toAccount: 'Lønkonto' }, SAV);
+  assert.equal(r.bucket, 'saving'); assert.equal(r.sign, 1);
+  assert.equal(flowOf({ type: 'transfer', account: 'A', toAccount: 'A' }, { account: 'A' }).sign, 0, 'samme konto → 0');
+  assert.ok(touchesAccount(FAM[1], 'Budgetkonto') && touchesAccount(FAM[1], 'Lønkonto') && !touchesAccount(FAM[1], 'Opsparingskonto'));
+});
+t('likviditet pr. konto medtager overførsler; alle konti ignorerer dem', () => {
+  const cf = projectCashflow(FAM, 1000, D(2026, 9, 29), 2, { account: 'Budgetkonto' });
+  const oct = cf.months[1];
+  assert.equal(oct.income, 9500); assert.equal(oct.expense, 9100); assert.equal(oct.end, 1400);
+  assert.equal(oct.min, 1000, 'overførslen lander før huslejen samme dag → kontoen kommer aldrig under startsaldoen');
+  const all = projectCashflow(FAM, 0, D(2026, 9, 29), 2);
+  assert.equal(all.months[1].income, 50000); assert.equal(all.months[1].expense, 38000);
+});
+t('budgetkonto-behov: overførsler væk fra kontoen skal dækkes', () => {
+  const r = requiredBalance(FAM, 'Lønkonto', D(2026, 9, 29));
+  close(r.monthlyTransfer, 9500 + 3000 + 28900, 'lønkonto ud');
+  close(requiredBalance(FAM, 'Budgetkonto', D(2026, 9, 29)).monthlyTransfer, 9100, 'kun husleje');
+});
+t('kalenderår med opsparing', () => {
+  const c = calendarYear(FAM, 2027, SAV);
+  assert.equal(c.saving, 36000); assert.equal(c.net, 12 * 9000);
+});
+t('person-overblik: opsparing pr. person og fælles', () => {
+  const items = [
+    { type: 'income', amount: 30000, freq: 1, who: 'A', account: 'Løn' },
+    { type: 'income', amount: 20000, freq: 1, who: 'B', account: 'Løn' },
+    { type: 'transfer', amount: 2000, freq: 1, who: 'A', account: 'Løn', toAccount: 'Opsparing' },
+    { type: 'transfer', amount: 1000, freq: 1, account: 'Budgetkonto', toAccount: 'Opsparing' },  // fælles opsparing
+    { type: 'transfer', amount: 9000, freq: 1, who: 'A', account: 'Løn', toAccount: 'Budgetkonto' }, // ignoreres
+    { type: 'expense', amount: 8000, freq: 1, account: 'Budgetkonto' },
+  ];
+  const s = personSummary(items, { jointAccounts: ['Budgetkonto'], jointSplit: { A: 50, B: 50 }, people: ['A', 'B'], savingsAccounts: ['Opsparing'] });
+  const A = s.persons.find((p) => p.name === 'A'), B = s.persons.find((p) => p.name === 'B');
+  close(s.joint.need, 9000, 'fælles 8000 + opsparing 1000'); close(A.saving, 2000, 'A opsparing');
+  close(A.left, 30000 - 4500 - 2000, 'A tilbage'); close(B.left, 20000 - 4500, 'B tilbage');
 });
 console.log(`${passed} tests bestået i alt.`);

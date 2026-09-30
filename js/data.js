@@ -7,6 +7,7 @@ import { state, emit, lists, defaultLists, canEdit, ALL, isShared } from './stat
 import { firstName, isoDate, currentYm, fmtYm, errorToast, toast, esc } from './ui.js';
 import { freqLabel } from './calc.js';
 import { removeFile, purgeBudgetFiles, sendInviteMail } from './files.js';
+import { buildDemo, DEMO_NAME } from './demo.js';
 
 export const budgetRef = (id = state.budgetId) => doc(db, 'budgets', id);
 export const sub = (name, id = state.budgetId) => collection(db, 'budgets', id, name);
@@ -30,7 +31,7 @@ export async function logAction(action, entity, label, changes = null, budgetId 
   } catch (e) { console.warn('Log fejlede', e); }
 }
 
-const LOG_FIELDS = { name: 'Navn', amount: 'Beløb', freq: 'Hvor ofte', category: 'Kategori', who: 'Hvem', split: 'Fordeling', supplier: 'Leverandør', method: 'Metode', account: 'Konto', startMonth: 'Første betaling', payDay: 'Betalingsdag', endMonth: 'Slutter', note: 'Note', active: 'Aktiv', type: 'Type', store: 'Butik', what: 'Hvad', date: 'Dato', title: 'Titel', expiryDate: 'Udløb', yearlyPrice: 'Årlig pris' };
+const LOG_FIELDS = { name: 'Navn', amount: 'Beløb', freq: 'Hvor ofte', category: 'Kategori', who: 'Hvem', split: 'Fordeling', supplier: 'Leverandør', method: 'Metode', account: 'Konto', toAccount: 'Til konto', startMonth: 'Første betaling', payDay: 'Betalingsdag', endMonth: 'Slutter', note: 'Note', active: 'Aktiv', type: 'Type', store: 'Butik', what: 'Hvad', date: 'Dato', title: 'Titel', expiryDate: 'Udløb', yearlyPrice: 'Årlig pris' };
 const fmtSplit = (sp) => (sp && typeof sp === 'object' ? Object.entries(sp).filter(([, p]) => p > 0).map(([n, p]) => `${n} ${p} %`).join(', ') : '');
 export function diffFields(oldObj = {}, newObj = {}) {
   const out = {};
@@ -50,12 +51,12 @@ export async function createBudget(name, { copyFromId = null } = {}) {
   const u = me();
   const ref = doc(collection(db, 'budgets'));
   let listsData = defaultLists(firstName(u.name));
-  let settings = { balances: [{ account: 'Budgetkonto', amount: 0, date: isoDate() }], jointAccounts: ['Budgetkonto', 'Fælleskonto'], defaultVisibleTo: [ALL], warnBelow: 1000 };
+  let settings = { balances: [{ account: 'Budgetkonto', amount: 0, date: isoDate() }], jointAccounts: ['Budgetkonto', 'Fælleskonto'], savingsAccounts: ['Opsparingskonto'], defaultVisibleTo: [ALL], warnBelow: 1000 };
   let items = [];
   if (copyFromId) {
     const src = state.budgets.find((b) => b.id === copyFromId);
     if (src?.lists) listsData = src.lists;
-    if (src?.settings) settings = src.settings;
+    if (src?.settings) { settings = { ...src.settings }; delete settings.demo; }
     items = state.items.filter(() => copyFromId === state.budgetId).map(({ id, history, ...it }) => ({ ...it, visibleTo: isShared(it) ? [ALL] : [u.uid] }));
   }
   await setDoc(ref, {
@@ -120,7 +121,7 @@ const CASCADE = {
   people: [['items', 'who'], ['receipts', 'who']],
   suppliers: [['items', 'supplier'], ['documents', 'supplier']],
   methods: [['items', 'method']],
-  accounts: [['items', 'account']],
+  accounts: [['items', 'account'], ['items', 'toAccount']],
   stores: [['receipts', 'store']],
   receiptCategories: [['receipts', 'category']],
   docTypes: [['documents', 'docType']],
@@ -134,6 +135,8 @@ export async function renameListValue(key, oldV, newV) {
     patch['settings.balances'] = (state.budget.settings?.balances || []).map((b) => (b.account === oldV ? { ...b, account: newV } : b));
     const j = state.budget.settings?.jointAccounts;
     if (Array.isArray(j)) patch['settings.jointAccounts'] = j.map((x) => (x === oldV ? newV : x));
+    const sv = state.budget.settings?.savingsAccounts;
+    if (Array.isArray(sv)) patch['settings.savingsAccounts'] = sv.map((x) => (x === oldV ? newV : x));
   }
   if (key === 'people') {
     const js = state.budget.settings?.jointSplit;
@@ -369,4 +372,66 @@ export async function deleteBudgetCompletely(budget) {
   for (const s of budget.shares || []) await deleteDoc(doc(db, 'shares', s.token)).catch(() => {});
   await deleteDoc(doc(db, 'budgets', id));
   toast(`"${budget.name}" er slettet`);
+}
+
+// ---------- Prøvebudget ----------
+
+/** Skriv eksempel-data ind i et (tomt) budget. */
+async function seedDemo(budgetId) {
+  const d = buildDemo(state.user.uid);
+  const u = me();
+  const stamp = { createdAt: serverTimestamp(), createdBy: u.uid, createdByName: 'Eksempel', updatedAt: serverTimestamp() };
+  const writes = [
+    ...d.items.map(({ id, ...it }) => [doc(sub('items', budgetId), id), { ...it, history: [], ...stamp }]),
+    ...d.receipts.map(({ id, ...r }) => [doc(sub('receipts', budgetId), id), { ...r, ...stamp }]),
+    ...d.documents.map(({ id, ...r }) => [doc(sub('documents', budgetId), id), { ...r, ...stamp }]),
+  ];
+  for (let i = 0; i < writes.length; i += 400) {
+    const b = writeBatch(db);
+    writes.slice(i, i + 400).forEach(([ref, data]) => b.set(ref, data));
+    await b.commit();
+  }
+  await setDoc(doc(sub('snapshots', budgetId), 'demo_old'), {
+    name: d.snapshot.name, auto: false, createdAt: serverTimestamp(), createdBy: u.uid, createdByName: 'Eksempel',
+    items: d.snapshot.items.filter((i) => i.visibleTo.includes(ALL)), balances: [],
+  });
+  return d;
+}
+
+/** Opret et nyt prøvebudget med en eksempel-familie. Returnerer budget-id. */
+export async function createDemoBudget() {
+  const existing = state.budgets.find((b) => b.settings?.demo && b.ownerUid === state.user.uid);
+  if (existing) return existing.id;
+  const u = me();
+  const ref = doc(collection(db, 'budgets'));
+  const d = buildDemo(u.uid);
+  await setDoc(ref, {
+    name: DEMO_NAME, ownerUid: u.uid,
+    members: { [u.uid]: 'admin' }, memberUids: [u.uid],
+    memberInfo: { [u.uid]: { name: u.name, email: u.email, photo: u.photo, joinedAt: Date.now() } },
+    invites: [], shares: [], lists: d.lists, settings: d.settings,
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+  });
+  await seedDemo(ref.id);
+  await logAction('create', 'budget', `${DEMO_NAME} oprettet`, null, ref.id);
+  return ref.id;
+}
+
+/** Nulstil prøvebudgettet til udgangspunktet (sletter alt og fylder op igen). */
+export async function resetDemoBudget(budgetId = state.budgetId) {
+  for (const colName of ['items', 'receipts', 'documents']) {
+    const rows = await loadAll(colName, budgetId);
+    for (const r of rows) for (const f of r.files || (r.file ? [r.file] : [])) await removeFile(f).catch(() => {});
+    for (let i = 0; i < rows.length; i += 400) {
+      const b = writeBatch(db);
+      rows.slice(i, i + 400).forEach((r) => b.delete(doc(sub(colName, budgetId), r.id)));
+      await b.commit();
+    }
+  }
+  const snaps = await getDocs(sub('snapshots', budgetId));
+  for (const s of snaps.docs) await deleteDoc(s.ref);
+  const d = buildDemo(state.user.uid);
+  await updateDoc(budgetRef(budgetId), { lists: d.lists, settings: d.settings, updatedAt: serverTimestamp() });
+  await seedDemo(budgetId);
+  await logAction('update', 'budget', 'Prøvebudgettet blev nulstillet', null, budgetId);
 }

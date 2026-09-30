@@ -8,7 +8,7 @@
 //  • Likviditet regnes i hele øre (heltal) for at undgå afrundingsfejl (0,1 + 0,2 ≠ 0,3).
 //  • Betalinger med betalingsdag på eller før dags dato i indeværende måned
 //    regnes som allerede trukket (saldoen du indtaster i dag er efter dem).
-//  • Samme dag: penge ind før penge ud (faste overførsler lander før Betalingsservice).
+//  • Samme dag: indtægter før udgifter (faste overførsler lander før Betalingsservice).
 // =====================================================================
 
 export const DEFAULT_FREQUENCIES = [
@@ -106,53 +106,95 @@ export function nextPayment(item, today = new Date()) {
   return null;
 }
 
+// ---------- Pengestrømme pr. konto / samlet ----------
+// Tre typer poster:
+//   income   — indtægt, går ind på item.account
+//   expense  — udgift, trækkes fra item.account
+//   transfer — overførsel mellem egne konti: fra item.account til item.toAccount
+//
+// SAMLET budget (account = null): overførsler til en OPSPARINGSKONTO tæller som "opsparing"
+// og trækkes fra det, der er tilbage af lønnen. Hævninger fra opsparing tæller som plus.
+// Overførsler mellem brugskonti (fx lønkonto → budgetkonto) tæller ikke — pengene bliver i familien.
+//
+// ÉN konto (account = 'Budgetkonto'): alt der går ind på kontoen er plus, alt der går ud er minus —
+// også overførsler. Opsparing der går fra en anden konto, rører ikke denne konto.
+
+export const isTransfer = (it) => it.type === 'transfer';
+
+/**
+ * Hvordan påvirker én betaling af posten den valgte visning?
+ * Returnerer { bucket: 'income'|'expense'|'saving'|null, sign: +1|-1|0 }.
+ */
+export function flowOf(item, { account = null, savingsAccounts = [] } = {}) {
+  const from = item.account || '', to = item.toAccount || '';
+  if (account) {
+    if (item.type === 'income') return from === account ? { bucket: 'income', sign: 1 } : { bucket: null, sign: 0 };
+    if (item.type === 'expense') return from === account ? { bucket: 'expense', sign: -1 } : { bucket: null, sign: 0 };
+    if (from === to) return { bucket: null, sign: 0 };
+    if (to === account) return { bucket: 'income', sign: 1 };
+    if (from === account) return { bucket: 'expense', sign: -1 };
+    return { bucket: null, sign: 0 };
+  }
+  if (item.type === 'income') return { bucket: 'income', sign: 1 };
+  if (item.type === 'expense') return { bucket: 'expense', sign: -1 };
+  const toS = savingsAccounts.includes(to), fromS = savingsAccounts.includes(from);
+  if (toS && !fromS) return { bucket: 'saving', sign: -1 };
+  if (fromS && !toS) return { bucket: 'saving', sign: 1 };   // hævning fra opsparing
+  return { bucket: null, sign: 0 };
+}
+
+/** Poster der overhovedet vedrører en konto (til lister/filtre). */
+export const touchesAccount = (it, account) => (it.account || '') === account || (isTransfer(it) && (it.toAccount || '') === account);
+
 // ---------- Overblik ----------
 /**
  * Normaliseret budget: summer månedlige ækvivalenter.
- * Returnerer tal i kr. (ikke afrundet — afrund ved visning).
+ * opts.account = null → hele budgettet; ellers kun den konto.
+ * net = indtægter − udgifter − opsparing  ("tilbage af lønnen" / "tilbage på kontoen").
  */
-export function summarize(items, today = new Date()) {
+export function summarize(items, today = new Date(), opts = {}) {
   const now = dateToIndex(today);
   const res = {
-    income: 0, expense: 0, net: 0,
-    yearIncome: 0, yearExpense: 0, yearNet: 0,
-    byCategory: {}, // key "type|kategori" -> kr/md
-    byAccount: {},  // konto -> { income, expense } kr/md
-    byPerson: {},   // person -> { income, expense } kr/md
+    income: 0, expense: 0, saving: 0, net: 0,
+    yearIncome: 0, yearExpense: 0, yearSaving: 0, yearNet: 0,
+    byCategory: {}, // key "type|kategori" -> kr/md (type: income|expense|transfer)
     count: 0,
   };
   for (const it of items) {
     if (!countsInBudget(it, now)) continue;
+    const { bucket, sign } = flowOf(it, opts);
+    if (!bucket) continue;
     const m = monthly(it);
-    const isInc = it.type === 'income';
     res.count++;
-    if (isInc) res.income += m; else res.expense += m;
-    const cKey = `${isInc ? 'income' : 'expense'}|${it.category || 'Uden kategori'}`;
+    if (bucket === 'income') res.income += m;
+    else if (bucket === 'expense') res.expense += m;
+    else res.saving += -sign * m; // opsparing er positiv, hævning negativ
+    const t = isTransfer(it) ? 'transfer' : it.type;
+    const cKey = `${t}|${it.category || (t === 'transfer' ? 'Opsparing' : 'Uden kategori')}`;
     res.byCategory[cKey] = (res.byCategory[cKey] || 0) + m;
-    const acc = it.account || 'Ingen konto';
-    res.byAccount[acc] ??= { income: 0, expense: 0 };
-    res.byAccount[acc][isInc ? 'income' : 'expense'] += m;
-    const who = it.who || 'Ikke angivet';
-    res.byPerson[who] ??= { income: 0, expense: 0 };
-    res.byPerson[who][isInc ? 'income' : 'expense'] += m;
   }
-  res.net = res.income - res.expense;
+  res.net = res.income - res.expense - res.saving;
   res.yearIncome = res.income * 12;
   res.yearExpense = res.expense * 12;
+  res.yearSaving = res.saving * 12;
   res.yearNet = res.net * 12;
   return res;
 }
 
 /** Faktiske betalinger i et kalenderår (jan–dec), uanset normalisering. */
-export function calendarYear(items, year) {
-  let inc = 0, exp = 0;
+export function calendarYear(items, year, opts = {}) {
+  let inc = 0, exp = 0, sav = 0;
   for (let mi = year * 12; mi < year * 12 + 12; mi++) {
     for (const it of items) {
       if (!paysIn(it, mi)) continue;
-      if (it.type === 'income') inc += toOre(it.amount); else exp += toOre(it.amount);
+      const { bucket, sign } = flowOf(it, opts);
+      const o = toOre(it.amount);
+      if (bucket === 'income') inc += o;
+      else if (bucket === 'expense') exp += o;
+      else if (bucket === 'saving') sav += -sign * o;
     }
   }
-  return { income: fromOre(inc), expense: fromOre(exp), net: fromOre(inc - exp) };
+  return { income: fromOre(inc), expense: fromOre(exp), saving: fromOre(sav), net: fromOre(inc - exp - sav) };
 }
 
 /**
@@ -161,6 +203,7 @@ export function calendarYear(items, year) {
  * Opsparet andel = beløb × (freq − måneder til næste betaling) / freq   (min. 0)
  *   • Betaling senere i denne måned  -> hele beløbet skal stå klar
  *   • Lige betalt                     -> 0
+ * Overførsler VÆK fra kontoen tæller som regninger, der skal dækkes.
  * account = null betyder alle udgiftsposter.
  */
 export function requiredBalance(items, account = null, today = new Date()) {
@@ -169,6 +212,7 @@ export function requiredBalance(items, account = null, today = new Date()) {
   const rows = [];
   for (const it of items) {
     if (it.type === 'income' || !countsInBudget(it, now)) continue;
+    if (isTransfer(it) && (account === null || it.toAccount === it.account)) continue;
     if (account !== null && (it.account || '') !== account) continue;
     const f = freqOf(it);
     transfer += monthly(it);
@@ -185,11 +229,14 @@ export function requiredBalance(items, account = null, today = new Date()) {
 // ---------- Likviditet ----------
 /**
  * Simulér saldoen dag for dag (pr. hændelse) de næste `horizon` måneder.
- * Samme dag: penge ind før penge ud (sådan behandler bankerne faste overførsler og Betalingsservice).
+ * opts.account: kun den konto (overførsler ind = plus, ud = minus).
+ * Uden account: alle konti lagt sammen — overførsler mellem egne konti tæller ikke.
+ * Samme dag: indtægter før udgifter (sådan behandler bankerne faste overførsler og Betalingsservice).
  */
-export function projectCashflow(items, startBalance, today = new Date(), horizon = 12) {
+export function projectCashflow(items, startBalance, today = new Date(), horizon = 12, opts = {}) {
   const now = dateToIndex(today);
   const day = today.getDate();
+  const account = opts.account || null;
   let bal = toOre(startBalance);
   let lowest = { ore: bal, mi: now, day };
   const months = [];
@@ -199,10 +246,15 @@ export function projectCashflow(items, startBalance, today = new Date(), horizon
     const evs = [];
     for (const it of items) {
       if (!paysIn(it, mi)) continue;
+      let sign;
+      if (account) sign = flowOf(it, { account }).sign;
+      else sign = it.type === 'income' ? 1 : it.type === 'expense' ? -1 : 0;
+      if (!sign) continue;
       const d = payDayIn(it, mi);
       if (k === 0 && d <= day) continue;
       const ore = toOre(it.amount);
-      evs.push({ day: d, ore: it.type === 'income' ? ore : -ore, name: it.name, id: it.id, type: it.type, account: it.account || '' });
+      const label = isTransfer(it) ? `${it.name} (${sign > 0 ? `fra ${it.account}` : `til ${it.toAccount}`})` : it.name;
+      evs.push({ day: d, ore: sign * ore, name: label, id: it.id, type: it.type, account: it.account || '' });
     }
     evs.sort((a, b) => a.day - b.day || b.ore - a.ore);
 
@@ -236,9 +288,9 @@ export function projectCashflow(items, startBalance, today = new Date(), horizon
 }
 
 // ---------- Sammenligning ----------
-const COMPARE_FIELDS = ['amount', 'freq', 'category', 'who', 'supplier', 'account', 'method', 'startMonth', 'payDay', 'endMonth', 'active'];
+const COMPARE_FIELDS = ['amount', 'freq', 'category', 'who', 'supplier', 'account', 'toAccount', 'method', 'startMonth', 'payDay', 'endMonth', 'active'];
 
-export function compareItems(oldItems, newItems, today = new Date()) {
+export function compareItems(oldItems, newItems, today = new Date(), opts = {}) {
   const now = dateToIndex(today);
   const eff = (it) => (it && countsInBudget(it, now) ? monthly(it) : 0);
   const nameKey = (it) => `${it.type}|${String(it.name || '').trim().toLowerCase()}`;
@@ -262,8 +314,8 @@ export function compareItems(oldItems, newItems, today = new Date()) {
   }
   const unchanged = same.length;
 
-  const a = summarize(oldItems, today);
-  const b = summarize(newItems, today);
+  const a = summarize(oldItems, today, opts);
+  const b = summarize(newItems, today, opts);
   const cats = new Set([...Object.keys(a.byCategory), ...Object.keys(b.byCategory)]);
   const categories = [...cats].map((key) => {
     const [type, cat] = key.split('|');
@@ -287,9 +339,9 @@ export function compareItems(oldItems, newItems, today = new Date()) {
     removed: removed.map((o) => ({ item: o, deltaMonthly: -eff(o) })),
     changed, unchanged, same, categories,
     totals: {
-      before: { income: a.income, expense: a.expense, net: a.net },
-      after: { income: b.income, expense: b.expense, net: b.net },
-      delta: { income: b.income - a.income, expense: b.expense - a.expense, net: b.net - a.net },
+      before: { income: a.income, expense: a.expense, saving: a.saving, net: a.net },
+      after: { income: b.income, expense: b.expense, saving: b.saving, net: b.net },
+      delta: { income: b.income - a.income, expense: b.expense - a.expense, saving: b.saving - a.saving, net: b.net - a.net },
     },
   };
 }
@@ -322,38 +374,44 @@ export function shareOf(item, jointAccounts = []) {
  * Samlet overblik: hvad skal hver person af med, og hvad kommer ind?
  * jointSplit { navn: procent } = hvordan I deler det, fælleskontoen mangler (standard: lige over).
  */
-export function personSummary(items, { jointAccounts = [], jointSplit = null, people = [], today = new Date() } = {}) {
+export function personSummary(items, { jointAccounts = [], jointSplit = null, people = [], savingsAccounts = [], today = new Date() } = {}) {
   const now = dateToIndex(today);
   const persons = {};
-  const ensure = (n) => (persons[n] ??= { name: n, ownExpense: 0, income: 0, jointContribution: 0, items: [] });
-  const joint = { expense: 0, income: 0, items: [] };
+  const ensure = (n) => (persons[n] ??= { name: n, ownExpense: 0, income: 0, saving: 0, jointContribution: 0, items: [] });
+  const joint = { expense: 0, income: 0, saving: 0, items: [] };
   for (const n of people) if (n !== JOINT) ensure(n);
 
   for (const it of items) {
     if (!countsInBudget(it, now)) continue;
+    // Overførsler: kun opsparing tæller (overførsler mellem brugskonti er bare flytning af penge)
+    let kind = it.type;
+    if (isTransfer(it)) {
+      const { bucket, sign } = flowOf(it, { savingsAccounts });
+      if (bucket !== 'saving') continue;
+      kind = sign < 0 ? 'saving' : 'withdraw';
+    }
     const { parts } = shareOf(it, jointAccounts);
     for (const [name, amt] of Object.entries(parts)) {
-      if (name === JOINT) {
-        if (it.type === 'income') joint.income += amt; else joint.expense += amt;
-        joint.items.push({ item: it, amount: amt });
-      } else {
-        const p = ensure(name);
-        if (it.type === 'income') p.income += amt; else p.ownExpense += amt;
-        p.items.push({ item: it, amount: amt });
-      }
+      const tgt = name === JOINT ? joint : ensure(name);
+      if (kind === 'income') tgt.income += amt;
+      else if (kind === 'expense') { if (tgt === joint) joint.expense += amt; else tgt.ownExpense += amt; }
+      else if (kind === 'saving') tgt.saving += amt;
+      else if (kind === 'withdraw') tgt.saving -= amt;
+      tgt.items.push({ item: it, amount: amt });
     }
   }
 
-  // Hvor meget skal der overføres til fælles? (fælles udgifter minus det, der kommer direkte ind på fælleskonti)
-  const jointNeed = Math.max(0, joint.expense - joint.income);
+  // Hvor meget skal der overføres til fælles? (fælles udgifter + fælles opsparing minus det, der kommer direkte ind)
+  const jointNeed = Math.max(0, joint.expense + joint.saving - joint.income);
   const names = Object.keys(persons);
   let split = jointSplit && Object.values(jointSplit).some((p) => Number(p) > 0) ? jointSplit : null;
   if (!split) split = Object.fromEntries(names.map((n) => [n, 100 / (names.length || 1)]));
   const total = Object.entries(split).filter(([n]) => persons[n]).reduce((s, [, p]) => s + Number(p || 0), 0);
   for (const n of names) {
-    persons[n].jointContribution = total > 0 ? (jointNeed * Number(split[n] || 0)) / total : 0;
-    persons[n].totalOut = persons[n].ownExpense + persons[n].jointContribution;
-    persons[n].left = persons[n].income - persons[n].totalOut;
+    const p = persons[n];
+    p.jointContribution = total > 0 ? (jointNeed * Number(split[n] || 0)) / total : 0;
+    p.totalOut = p.ownExpense + p.jointContribution;
+    p.left = p.income - p.totalOut - p.saving;
   }
   return { persons: Object.values(persons), joint: { ...joint, need: jointNeed }, split };
 }

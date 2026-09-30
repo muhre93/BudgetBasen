@@ -24,6 +24,7 @@ budgetbasen/
 │   ├── export.js           PDF (jsPDF) og Excel (SheetJS) — hentes først ved klik
 │   ├── forms.js            Dropdowns med "+ Tilføj ny…", synlighed og %-fordeling
 │   ├── help.js             ?-forklaringer og velkomstguide
+│   ├── demo.js             Prøvebudgettet (eksempel-familien)
 │   ├── state.js            Fælles tilstand, roller, standardlister
 │   ├── ui.js               Formatering (kr., datoer), modaler, toasts
 │   └── views/
@@ -34,7 +35,7 @@ budgetbasen/
 │       ├── admin.js        Budgetter, medlemmer, lister, links, versioner, log, eksport
 │       ├── share.js        Del/udskriv + offentlig read-only visning
 │       └── compare.js      Sammenligning af versioner/budgetter
-└── tests/                  18 beregnings-tests + 9 sikkerhedstests af Worker'en
+└── tests/                  27 beregnings-tests + 9 sikkerhedstests af Worker'en
 ```
 
 ---
@@ -55,7 +56,7 @@ Firebase Storage kræver i dag et betalingskort, så filerne gemmes i stedet i *
 3. Worker → **Settings → Bindings → Add → KV namespace** → *Variable name* `FILES`, *KV namespace* `budgetbasen-files` → Save.
 4. Worker → **Settings → Variables and Secrets → Add** (type *Text*):
    - `FIREBASE_PROJECT_ID` = dit Firebase-projekt-id (står i `firebaseConfig.projectId`)
-   - `ALLOWED_ORIGINS` = `https://kronborg1980.github.io`
+   - `ALLOWED_ORIGINS` = `https://muhre93.github.io,https://kronborg1980.github.io`
 5. Kopiér Worker'ens adresse (f.eks. `https://budgetbasen-files.dit-navn.workers.dev`) og åbn den i browseren — `…/health` skal svare `{"ok":true,…}`.
 
 Foretrækker du at deploye fra GitHub (som din pbm-worker), så læg mappen `worker/` i et repo, udfyld `wrangler.toml` og forbind det under *Workers Builds*.
@@ -128,11 +129,21 @@ Uden disse virker appen stadig — så står der "Egen mail" ved invitationen, s
 - **Beløb pr. post = beløb pr. betaling.** Frekvens = antal måneder mellem betalinger. **Pr. måned = beløb ÷ frekvens**, pr. år = pr. måned × 12. Eksempel: 1.200 kr. hver 3. måned = 400 kr./md. = 4.800 kr./år.
 - **"Første/næste betaling"** (måned) + **betalingsdag** bestemmer præcis, i hvilke måneder og på hvilken dag pengene går. Dag 31 bliver automatisk til 30./28./29. i korte måneder.
 - **Overskud pr. md.** = alle aktive indtægter − udgifter (normaliseret pr. måned). **Årets resultat** vises både normaliseret (×12) og som *faktiske* betalinger i kalenderåret.
-- **Likviditet** simulerer saldoen betaling for betaling — ikke bare månedstotaler — så man ser hvis kontoen går i minus den 1., selvom lønnen kommer den 25. Beregnes i hele øre (ingen afrundingsfejl). Samme dag: penge ind før penge ud (som bankerne gør med faste overførsler og Betalingsservice). Betalinger med betalingsdag i dag eller tidligere i indeværende måned regnes som allerede trukket.
+- **Likviditet** simulerer saldoen betaling for betaling — ikke bare månedstotaler — så man ser hvis kontoen går i minus den 1., selvom lønnen kommer den 25. Beregnes i hele øre (ingen afrundingsfejl). Samme dag: indtægter før udgifter (som bankerne gør med faste overførsler og Betalingsservice). Betalinger med betalingsdag i dag eller tidligere i indeværende måned regnes som allerede trukket.
 - **Budgetkonto "Bør stå":** for hver udgift på kontoen: beløb × (frekvens − måneder til næste betaling) ÷ frekvens. Forudsætter at den månedlige overførsel lander den 1. Eksempel: årlig forsikring på 1.200 kr. betalt i marts → i september bør der stå 600 kr. Appen viser overskud/manko og den anbefalede månedlige overførsel.
 
+## Nyt i version 4
+- **Indtægt / Udgift / Overførsel.** Overførsler flytter penge mellem jeres egne konti (fx fast opsparing eller Lønkonto → Budgetkonto).
+- **Opsparing trækkes fra i det samlede budget:** Indtægter − Udgifter − Opsparing = **Tilbage af lønnen**. Hvilke konti der er opsparing, vælges under Admin → Lister.
+- **Vis hele budgettet eller én konto** (knapperne øverst på Budget). På en enkelt konto ser du kun det, der går ind og ud af netop den — inkl. overførsler. Opsparing fra en anden konto rører den ikke.
+- **Likviditet** tæller overførsler med, når du ser på én konto. Knappen "Tilføj månedlig overførsel" laver nu en rigtig overførsel.
+- **Prøvebudget:** en opdigtet familie (Anna & Jonas) med løn, regninger, opsparing, kvitteringer, et dokument med opsigelsesfrist og en gammel version at sammenligne med. Tilbydes ved første login; kan altid laves under Admin → Budgetter. Gul bjælke med *Nulstil* og *Slet*.
+- 27 beregnings-tests (bl.a. opsparing pr. konto og samlet).
+
+**Opdatering fra en tidligere version:** følg guiden "BudgetBasen opdatering" trin for trin. Kort: sæt den nye `firestore.rules` ind (ellers kan overførsler ikke gemmes), upload alle filer til GitHub, genindlæs appen.
+
 ## Nyt i version 3
-- **Hvem betaler hvad:** kort pr. person med "skal af med i alt", egne regninger + andel til fælleskontoen, penge ind og hvad der er tilbage. Procent-fordeling pr. post; poster på en fælleskonto er automatisk fælles. Fordelingen af det fælleskontoen mangler, og hvilke konti der er fælles, rettes med "Ret fordeling".
+- **Hvem betaler hvad:** kort pr. person med "skal af med i alt", egne regninger + andel til fælleskontoen, indtægter og hvad der er tilbage. Procent-fordeling pr. post; poster på en fælleskonto er automatisk fælles. Fordelingen af det fælleskontoen mangler, og hvilke konti der er fælles, rettes med "Ret fordeling".
 - **Privat / synlighed:** "Hvem må se den?" (Alle / Kun mig / Udvalgte) på poster, kvitteringer og dokumenter + standard for nye poster (fx kun de voksne). "🔒 Nyt privat budget" til egen opsparing.
 - **Filter-knap** på Budget og Kvitteringer; søgning sker for hvert bogstav uden at tastaturet lukker.
 - **Historik:** når du retter en post, står "Før: …" ved feltet, og hver post har sin egen historik. Sammenligning viser hele budgettet side om side (før | nu | forskel) med en sætning i hverdagssprog.
@@ -164,4 +175,4 @@ Uden disse virker appen stadig — så står der "Egen mail" ved invitationen, s
 - **Offline**: appen åbner uden net, og ændringer synkroniseres, når der er forbindelse igen.
 
 ## Opdateringer
-Når du ændrer filer, så hæv `VERSION` i `sw.js` (nu `bb-v3`, næste gang `bb-v4`), så installerede telefoner henter den nye udgave.
+Når du ændrer filer, så hæv `VERSION` i `sw.js` (nu `bb-v4`, næste gang `bb-v5`), så installerede telefoner henter den nye udgave.

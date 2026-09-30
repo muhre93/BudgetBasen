@@ -7,8 +7,8 @@ import {
 } from './js/firebase.js';
 import { state, emit, onChange, roleLabel } from './js/state.js';
 import { $, $$, esc, toast, errorToast, lsGet, lsSet, firstName, confirmDialog } from './js/ui.js';
-import { createBudget, loadMyInvites, acceptInvite, declineInvite, ensureAutoSnapshot, watchVisible } from './js/data.js';
-import { maybeShowWelcome } from './js/help.js';
+import { createBudget, loadMyInvites, acceptInvite, declineInvite, ensureAutoSnapshot, watchVisible, createDemoBudget, resetDemoBudget, deleteBudgetCompletely } from './js/data.js';
+import { maybeShowWelcome, setDemoHandler } from './js/help.js';
 import * as budgetView from './js/views/budget.js';
 import * as cashflowView from './js/views/cashflow.js';
 import * as receiptsView from './js/views/receipts.js';
@@ -28,6 +28,7 @@ function initApp() {
   $('#btn-login').onclick = login;
   getRedirectResult(auth).catch((e) => e.code !== 'auth/no-auth-event' && errorToast(e));
   adminView.setSelectBudget(selectBudget);
+  setDemoHandler(openDemo);
 
   const hashView = location.hash.slice(1);
   state.view = VIEWS[hashView] ? hashView : lsGet('bb:view', 'budget');
@@ -156,6 +157,7 @@ function setView(v) {
 function render() {
   if (!state.user) return;
   renderInvites();
+  renderDemoBar();
   $$('#tabs [data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
   $('#role-badge').textContent = roleLabel();
   const main = $('#main');
@@ -173,6 +175,36 @@ function render() {
   if (main.dataset.view !== state.view || main.dataset.budget !== state.budgetId) { main.dataset.shell = ''; main.dataset.view = state.view; main.dataset.budget = state.budgetId; }
   try { VIEWS[state.view].render(main); } catch (e) { console.error(e); main.innerHTML = `<div class="empty glass"><p>Der skete en fejl: ${esc(e.message)}</p></div>`; }
   if (focusId) { const n = document.getElementById(focusId); if (n) { n.focus(); if (pos !== null) try { n.setSelectionRange(pos, pos); } catch { /* ikke tekstfelt */ } } }
+}
+
+// ---------- Prøvebudget ----------
+async function openDemo() {
+  toast('Laver prøvebudgettet …', 'ok', 2500);
+  try { const id = await createDemoBudget(); selectBudget(id); setView('budget'); }
+  catch (e) { errorToast(e); }
+}
+function renderDemoBar() {
+  const box = $('#demo-bar');
+  const b = state.budget;
+  if (!b?.settings?.demo) { box.innerHTML = ''; return; }
+  const own = state.budgets.find((x) => !x.settings?.demo);
+  box.innerHTML = `<div class="demo-bar">
+    <span>📚 <b>Du kigger på et prøvebudget.</b> Tallene er opdigtede — prøv løs, du kan ikke ødelægge noget.</span>
+    <span class="row-actions">
+      ${own ? `<button class="btn small primary" data-demo="own">Gå til mit eget budget</button>` : ''}
+      <button class="btn small ghost" data-demo="reset">↺ Nulstil eksemplet</button>
+      ${b.ownerUid === state.user.uid ? '<button class="btn small danger-ghost" data-demo="delete">Slet prøvebudget</button>' : ''}
+    </span></div>`;
+  box.querySelector('[data-demo=own]')?.addEventListener('click', () => selectBudget(own.id));
+  box.querySelector('[data-demo=reset]').onclick = async (e) => {
+    if (!(await confirmDialog('Nulstil prøvebudgettet? Alt, du har ændret i eksemplet, bliver sat tilbage.', { okLabel: 'Nulstil', danger: false }))) return;
+    e.target.disabled = true;
+    try { await resetDemoBudget(b.id); toast('Prøvebudgettet er nulstillet'); } catch (err) { errorToast(err); } finally { e.target.disabled = false; }
+  };
+  box.querySelector('[data-demo=delete]')?.addEventListener('click', async () => {
+    if (!(await confirmDialog('Slet prøvebudgettet? Du kan altid lave et nyt under Admin → Budgetter.', { okLabel: 'Slet' }))) return;
+    try { await deleteBudgetCompletely(b); if (own) selectBudget(own.id); } catch (err) { errorToast(err); }
+  });
 }
 
 function renderInvites() {

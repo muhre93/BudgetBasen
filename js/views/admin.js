@@ -1,11 +1,11 @@
 // Admin: budgetter, medlemmer & invitationer, fleksible lister, frekvenser, delte links, versioner, log og eksport.
-import { state, isAdmin, isOwner, canEdit, lists, LIST_DEFS, ROLES, ROLE_HELP, role, ALL, jointAccounts } from '../state.js';
+import { state, isAdmin, isOwner, canEdit, lists, LIST_DEFS, ROLES, ROLE_HELP, role, ALL, jointAccounts, savingsAccounts } from '../state.js';
 import {
   esc, kr, fmtDate, openModal, confirmDialog, promptDialog, toast, errorToast, copyText, download, toDate,
 } from '../ui.js';
 import { freqLabel, monthly } from '../calc.js';
 import {
-  createBudget, updateBudget, deleteBudgetCompletely, leaveBudget, inviteMember, sendInvite, revokeInvite, setMemberRole, removeMember, loadAll,
+  createBudget, createDemoBudget, updateBudget, deleteBudgetCompletely, leaveBudget, inviteMember, sendInvite, revokeInvite, setMemberRole, removeMember, loadAll,
   addListValue, renameListValue, removeListValue, addFrequency, listSnapshots, deleteSnapshot, loadLog, budgetRef, sub,
 } from '../data.js';
 import { updateDoc, serverTimestamp } from '../firebase.js';
@@ -13,6 +13,7 @@ import { fullBackupToExcel, runExport, safeFile } from '../export.js';
 import { noticeDeadline } from './documents.js';
 import { deleteShare, shareUrl } from './share.js';
 import { openCompareDialog } from './compare.js';
+import { showWelcome } from '../help.js';
 
 const ui = { tab: 'budgets', log: null, logFilter: '', snaps: null };
 export function setSelectBudget(fn) { ui.selectBudget = fn; }
@@ -45,9 +46,13 @@ function budgets(el, root) {
     <section class="glass card">
       <div class="section-head"><h2>Mine budgetter</h2><span class="btn-row"><button class="btn primary small" id="ad-new">＋ Nyt budget</button><button class="btn ghost small" id="ad-private">🔒 Nyt privat budget</button></span></div>
       <p class="muted small">Et privat budget (fx din egen opsparing) kan kun du se — indtil du selv inviterer nogen.</p>
+      <div class="demo-offer">
+        <span>📚 <b>Prøvebudget</b> — se hvordan appen virker med en opdigtet familie.</span>
+        <span class="btn-row"><button class="btn small ghost" id="ad-demo">${state.budgets.some((b) => b.settings?.demo && b.ownerUid === state.user.uid) ? 'Åbn prøvebudget' : 'Lav prøvebudget'}</button><button class="btn small ghost" id="ad-guide">Vis guiden igen</button></span>
+      </div>
       <ul class="rows">${state.budgets.map((b) => {
         const r = b.ownerUid === state.user.uid ? 'Ejer' : ROLES[b.members?.[state.user.uid]] || '';
-        return `<li class="${b.id === state.budgetId ? 'current' : ''}"><div><b>${esc(b.name)}</b><div class="muted small">${r} · ${Object.keys(b.members || {}).length} medlem(mer)</div></div>
+        return `<li class="${b.id === state.budgetId ? 'current' : ''}"><div><b>${esc(b.name)}</b>${b.settings?.demo ? ' <span class="chip warn">Eksempel</span>' : ''}<div class="muted small">${r} · ${Object.keys(b.members || {}).length} medlem(mer)</div></div>
           ${b.id === state.budgetId ? '<span class="chip ok">Aktivt</span>' : `<button class="btn small ghost" data-open="${b.id}">Åbn</button>`}</li>`;
       }).join('')}</ul>
     </section>
@@ -64,6 +69,11 @@ function budgets(el, root) {
     if (!name) return;
     try { const id = await createBudget(name); ui.selectBudget?.(id); toast('Budget oprettet'); } catch (e) { errorToast(e); }
   };
+  el.querySelector('#ad-demo').onclick = async (e) => {
+    e.target.disabled = true;
+    try { const id = await createDemoBudget(); ui.selectBudget?.(id); } catch (err) { errorToast(err); } finally { e.target.disabled = false; }
+  };
+  el.querySelector('#ad-guide').onclick = () => showWelcome();
   el.querySelector('#ad-private').onclick = async () => {
     const name = await promptDialog('Nyt privat budget', { label: 'Navn', value: 'Min opsparing' });
     if (!name) return;
@@ -206,12 +216,21 @@ function listsTab(el) {
       <div class="checks">${L.accounts.map((a) => `<label class="check"><input type="checkbox" name="jointAcc" value="${esc(a)}" ${jointAccounts().includes(a) ? 'checked' : ''}> ${esc(a)}</label>`).join('')}</div>
     </section>
     <section class="glass card list-card">
+      <h3>Opsparingskonti 🐷</h3>
+      <p class="muted small">Overførsler til disse konti tæller som opsparing: de trækkes fra "Tilbage af lønnen" i det samlede budget, men ikke fra fx budgetkontoen.</p>
+      <div class="checks">${L.accounts.map((a) => `<label class="check"><input type="checkbox" name="savAcc" value="${esc(a)}" ${savingsAccounts().includes(a) ? 'checked' : ''}> ${esc(a)}</label>`).join('')}</div>
+    </section>
+    <section class="glass card list-card">
       <h3>Betalingsfrekvenser</h3>
       <ul class="rows compact">${L.frequencies.map((f) => `<li><div><b>${esc(f.label)}</b> <span class="muted small">hver ${f.months}. måned · beløb ÷ ${f.months} = pr. md.</span></div>
         <div class="row-actions"><button class="btn small ghost" data-frename="${f.months}">Omdøb</button><button class="icon-btn" data-fdel="${f.months}">✕</button></div></li>`).join('')}</ul>
       <form class="inline-form" id="freq-form"><input name="months" type="number" min="1" max="120" placeholder="Måneder" required class="w-sm"><input name="label" placeholder="Navn, f.eks. Hver 18. måned"><button class="btn small primary">Tilføj</button></form>
     </section>`;
 
+  el.querySelectorAll('[name=savAcc]').forEach((c) => (c.onchange = () => {
+    const val = [...el.querySelectorAll('[name=savAcc]:checked')].map((x) => x.value);
+    updateDoc(budgetRef(), { 'settings.savingsAccounts': val, updatedAt: serverTimestamp() }).then(() => toast('Opsparingskonti gemt')).catch(errorToast);
+  }));
   el.querySelectorAll('[name=jointAcc]').forEach((c) => (c.onchange = () => {
     const val = [...el.querySelectorAll('[name=jointAcc]:checked')].map((x) => x.value);
     updateDoc(budgetRef(), { 'settings.jointAccounts': val, updatedAt: serverTimestamp() }).then(() => toast('Fælleskonti gemt')).catch(errorToast);

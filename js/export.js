@@ -23,6 +23,7 @@ function loadScript(src) {
 async function getXLSX() { await loadScript(LIBS.xlsx); return window.XLSX; }
 async function getJsPDF() { await loadScript(LIBS.jspdf); await loadScript(LIBS.autotable); return window.jspdf.jsPDF; }
 
+const TL = { income: 'Indtægt', expense: 'Udgift', transfer: 'Overførsel' };
 export const safeFile = (s) => String(s || 'eksport').replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, '_').slice(0, 80);
 const nf = new Intl.NumberFormat('da-DK', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const nf0 = new Intl.NumberFormat('da-DK', { maximumFractionDigits: 0 });
@@ -222,7 +223,7 @@ export async function reportToPdf(r) {
   const extra = [o.supplier && ['Leverandør', 'supplier'], o.who && ['Hvem', 'who'], o.account && ['Konto', 'account']].filter(Boolean);
   const columns = [{ header: 'Post' }, ...extra.map(([h]) => ({ header: h })), { header: 'Frekvens' }, { header: 'Beløb', align: 'right' }, { header: 'Pr. md.', align: 'right' }];
   const sections = [];
-  for (const type of ['income', 'expense']) {
+  for (const type of ['income', 'expense', 'transfer']) {
     const secs = r.sections.filter((s) => s.type === type);
     if (!secs.length) continue;
     const rows = [], catRows = new Set();
@@ -232,7 +233,7 @@ export async function reportToPdf(r) {
       for (const i of s.items) rows.push([i.note && o.note ? `${i.name}\n${i.note}` : i.name, ...extra.map(([, k]) => i[k] || ''), i.freqLabel, pdfKr(i.amount), pdfKr(i.monthly)]);
     }
     const total = secs.reduce((a, s) => a + s.total, 0);
-    sections.push({ heading: type === 'income' ? 'Indtægter' : 'Udgifter', columns, rows, catRows, foot: ['I alt pr. måned', ...extra.map(() => ''), '', '', pdfKr(total)] });
+    sections.push({ heading: { income: 'Indtægter', expense: 'Udgifter', transfer: 'Opsparing & overførsler' }[type], columns, rows, catRows, foot: ['I alt pr. måned', ...extra.map(() => ''), '', '', pdfKr(total)] });
   }
   if (r.cashflow) sections.push(cashflowSection(r.cashflow));
   await toPdf(safeFile(r.title), {
@@ -245,8 +246,9 @@ function reportKpis(t) {
   return [
     { label: 'Indtægter pr. md.', value: pdfKr(t.income), color: [14, 140, 90] },
     { label: 'Udgifter pr. md.', value: pdfKr(t.expense) },
-    { label: 'Rådighed pr. md.', value: pdfKr(t.net), color: t.net < 0 ? [200, 40, 70] : [14, 140, 90] },
-    { label: 'Pr. år', value: pdfKr(t.yearNet, false), color: t.yearNet < 0 ? [200, 40, 70] : INK },
+    ...(t.saving ? [{ label: 'Opsparing pr. md.', value: pdfKr(t.saving) }] : []),
+    { label: 'Tilbage pr. md.', value: pdfKr(t.net), color: t.net < 0 ? [200, 40, 70] : [14, 140, 90] },
+    { label: 'Tilbage pr. år', value: pdfKr(t.yearNet, false), color: t.yearNet < 0 ? [200, 40, 70] : INK },
   ];
 }
 function cashflowSection(months) {
@@ -262,7 +264,7 @@ export async function reportToExcel(r) {
   const o = r.opts || {};
   const rows = [];
   for (const s of r.sections) for (const i of s.items) {
-    rows.push({ type: s.type === 'income' ? 'Indtægt' : 'Udgift', category: s.category, name: i.name, supplier: i.supplier, who: i.who, account: i.account, freq: i.freqLabel, amount: i.amount, monthly: i.monthly, yearly: Math.round(i.monthly * 1200) / 100, note: i.note });
+    rows.push({ type: TL[s.type], category: s.category, name: i.name, supplier: i.supplier, who: i.who, account: i.account, freq: i.freqLabel, amount: i.amount, monthly: i.monthly, yearly: Math.round(i.monthly * 1200) / 100, note: i.note });
   }
   const cols = [
     { header: 'Type', key: 'type', width: 10 }, { header: 'Kategori', key: 'category', width: 18 }, { header: 'Post', key: 'name', width: 28 },
@@ -274,12 +276,12 @@ export async function reportToExcel(r) {
   const t = r.totals;
   const sheets = [
     { name: 'Oversigt', title: r.title, columns: [{ header: 'Nøgletal', key: 'k', width: 26 }, { header: 'Pr. måned', key: 'm', type: 'kr', width: 18 }, { header: 'Pr. år', key: 'y', type: 'kr', width: 18 }],
-      rows: [{ k: 'Indtægter', m: t.income, y: t.income * 12 }, { k: 'Udgifter', m: t.expense, y: t.expense * 12 }, { k: 'Rådighed / overskud', m: t.net, y: t.yearNet }] },
+      rows: [{ k: 'Indtægter', m: t.income, y: t.income * 12 }, { k: 'Udgifter', m: t.expense, y: t.expense * 12 }, { k: 'Opsparing', m: t.saving || 0, y: (t.saving || 0) * 12 }, { k: 'Tilbage af lønnen', m: t.net, y: t.yearNet }] },
     { name: 'Poster', columns: cols, rows, totals: [] },
   ];
   // Udgifter og indtægter summeres separat — en fælles sum giver ikke mening
   sheets.push({ name: 'Pr. kategori', columns: [{ header: 'Type', key: 'type', width: 10 }, { header: 'Kategori', key: 'category', width: 22 }, { header: 'Pr. måned', key: 'total', type: 'kr', width: 16 }, { header: 'Pr. år', key: 'year', type: 'kr', width: 16 }],
-    rows: r.sections.map((s) => ({ type: s.type === 'income' ? 'Indtægt' : 'Udgift', category: s.category, total: s.total, year: s.total * 12 })) });
+    rows: r.sections.map((s) => ({ type: TL[s.type], category: s.category, total: s.total, year: s.total * 12 })) });
   if (r.cashflow) sheets.push(cashflowSheet(r.cashflow));
   await toExcel(safeFile(r.title), sheets);
 }
@@ -315,7 +317,7 @@ export async function cashflowToExcel({ title, accountLabel, cf }) {
   const events = [];
   for (const m of cf.months) for (const e of m.events) {
     const [y, mo] = m.ym.split('-').map(Number);
-    events.push({ date: new Date(y, mo - 1, e.day), name: e.name, account: e.account, type: e.amount < 0 ? 'Udgift' : 'Indtægt', amount: e.amount, balance: e.balance });
+    events.push({ date: new Date(y, mo - 1, e.day), name: e.name, account: e.account, type: e.type === 'transfer' ? 'Overførsel' : e.amount < 0 ? 'Udgift' : 'Indtægt', amount: e.amount, balance: e.balance });
   }
   await toExcel(safeFile(`Likviditet_${accountLabel}`), [
     { ...cashflowSheet(cf.months), title: `${title} · ${accountLabel}` },
@@ -378,7 +380,7 @@ export async function documentsToPdf(list, deadlineOf, label) {
 
 // ---------- Fuld backup (Admin → Eksport) ----------
 export async function fullBackupToExcel({ budget, items, receipts, documents, freqLabel, monthly, deadlineOf }) {
-  const itemRows = items.map((i) => ({ ...i, type: i.type === 'income' ? 'Indtægt' : 'Udgift', freqTxt: freqLabel(i.freq), monthly: monthly(i), active: i.active === false ? 'Nej' : 'Ja', private: i.private ? 'Ja' : 'Nej' }));
+  const itemRows = items.map((i) => ({ ...i, type: TL[i.type] || i.type, freqTxt: freqLabel(i.freq), monthly: monthly(i), active: i.active === false ? 'Nej' : 'Ja', private: i.private ? 'Ja' : 'Nej' }));
   const L = budget.lists || {};
   const maxLen = Math.max(0, ...Object.values(L).filter(Array.isArray).map((a) => a.length));
   const listRows = Array.from({ length: maxLen }, (_, r) => ({
@@ -390,7 +392,7 @@ export async function fullBackupToExcel({ budget, items, receipts, documents, fr
       { header: 'Type', key: 'type', width: 10 }, { header: 'Kategori', key: 'category', width: 18 }, { header: 'Navn', key: 'name', width: 26 },
       { header: 'Beløb', key: 'amount', type: 'kr', width: 14 }, { header: 'Frekvens', key: 'freqTxt', width: 20 }, { header: 'Pr. måned', key: 'monthly', type: 'kr', width: 14 },
       { header: 'Første betaling', key: 'startMonth', width: 14 }, { header: 'Betalingsdag', key: 'payDay', type: 'int', width: 12 }, { header: 'Slutter', key: 'endMonth', width: 10 },
-      { header: 'Hvem', key: 'who', width: 12 }, { header: 'Leverandør', key: 'supplier', width: 18 }, { header: 'Metode', key: 'method', width: 16 }, { header: 'Konto', key: 'account', width: 14 },
+      { header: 'Hvem', key: 'who', width: 12 }, { header: 'Leverandør', key: 'supplier', width: 18 }, { header: 'Metode', key: 'method', width: 16 }, { header: 'Konto', key: 'account', width: 14 }, { header: 'Til konto', key: 'toAccount', width: 14 },
       { header: 'Aktiv', key: 'active', width: 7 }, { header: 'Privat', key: 'private', width: 7 }, { header: 'Note', key: 'note', width: 40 },
     ], rows: itemRows },
     { name: 'Kvitteringer', columns: receiptCols, rows: receipts.map((r) => ({ ...r, hasFile: r.file ? 'Ja' : 'Nej' })), totals: ['amount'] },

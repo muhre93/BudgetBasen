@@ -557,7 +557,7 @@ details.history li { padding: 0.5rem 0.7rem; border-left: 3px solid var(--accent
 .cf-settings { display: grid; gap: 0.6rem; }
 
 /* Sammenligning */
-.cmp-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
+.cmp-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.5rem; }
 .cmp-kpi { display: grid; padding: 0.6rem 0.7rem; border-radius: 12px; background: var(--panel); border: 1px solid var(--border); }
 .cmp-kpi span { font-size: 0.75rem; color: var(--muted); }
 .cmp-kpi b { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
@@ -600,3 +600,24 @@ body { overflow-x: clip; }
 .cf-settings { grid-template-columns: minmax(0, 1fr); }
 .cf-settings label.inline { white-space: normal; flex-wrap: wrap; }
 label.inline { flex-wrap: wrap; }
+
+/* v4 — kontovalg, opsparing, overførsler, prøvebudget */
+.acct-view { display: grid; gap: 0.4rem; }
+.av-label { font-size: 0.8rem; font-weight: 700; color: var(--muted); margin-left: 0.2rem; }
+.av-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.av-chip { border: 1px solid var(--border); background: var(--panel); color: var(--text); font: 600 0.86rem var(--font); padding: 0.45rem 0.85rem; border-radius: 999px; cursor: pointer; backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); }
+.av-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent); }
+.kpi.save::before { background: #b07cff; }
+.kpi.save .kpi-value { color: #b07cff; }
+.kpi.acct::before { background: var(--accent2); }
+.type-head.transfer { color: #b07cff; }
+.item.transfer .amt { color: #b07cff; }
+.item.transfer.in .amt { color: var(--pos); }
+.item.transfer.out .amt { color: var(--neg); }
+.type-seg { margin-bottom: 0; }
+.type-help { margin: -0.3rem 0 0; }
+.demo-bar { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; justify-content: space-between; padding: 0.8rem 1rem; margin-top: 0.8rem; border-radius: var(--radius); background: color-mix(in srgb, var(--warn) 18%, var(--panel)); border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent); }
+.demo-bar b { color: var(--warn); }
+.demo-bar .row-actions { flex-wrap: wrap; }
+.welcome-choice { display: grid; gap: 0.6rem; margin-top: 0.4rem; }
+.demo-offer { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; justify-content: space-between; padding: 0.6rem 0.8rem; margin-top: 0.6rem; border: 1px dashed var(--border); border-radius: var(--radius-sm); font-size: 0.88rem; }
