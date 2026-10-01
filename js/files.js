@@ -7,7 +7,7 @@ import { FILES_WORKER_URL } from '../firebase-config.js';
 const MAX_UPLOAD = 10 * 1024 * 1024; // matcher Worker'en
 
 // ---------- Kald til Worker'en ----------
-async function workerFetch(path, options = {}) {
+export async function workerFetch(path, options = {}) {
   if (!FILES_WORKER_URL || FILES_WORKER_URL.includes('DIT-NAVN')) {
     throw new Error('Fil-serveren er ikke sat op endnu — indsæt FILES_WORKER_URL i firebase-config.js');
   }

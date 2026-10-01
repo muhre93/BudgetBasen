@@ -110,7 +110,7 @@ export function splitEditor(item) {
   const sp = item?.split || {};
   const hasSplit = Object.values(sp).some((v) => Number(v) > 0);
   return `<fieldset class="split-box" data-split>
-    <legend>Hvem betaler hvor meget? ${helpBtn('split')}</legend>
+    <legend><span data-split-lbl>Hvem betaler hvor meget?</span> ${helpBtn('split')}</legend>
     <p class="split-joint muted small hidden">Denne konto er en <b>fælleskonto</b> — posten deles automatisk som fælles. Du behøver ikke fordele den.</p>
     <div class="split-body">
       <label class="check"><input type="checkbox" name="useSplit" ${hasSplit ? 'checked' : ''}> Del posten mellem flere personer</label>

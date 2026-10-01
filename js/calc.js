@@ -174,6 +174,12 @@ export function summarize(items, today = new Date(), opts = {}) {
     res.byCategory[cKey] = (res.byCategory[cKey] || 0) + m;
   }
   res.net = res.income - res.expense - res.saving;
+  // Samlet: penge der overføres til fx budgetkontoen ud over det regningerne koster, hober sig op dér —
+  // de er ikke "tilbage af lønnen" til forbrug. De vises for sig.
+  res.funding = opts.account ? [] : accountFunding(items, { savingsAccounts: opts.savingsAccounts || [], today });
+  res.excess = res.funding.reduce((a, f) => a + f.excess, 0);
+  res.left = res.net - res.excess;
+  res.yearLeft = res.left * 12;
   res.yearIncome = res.income * 12;
   res.yearExpense = res.expense * 12;
   res.yearSaving = res.saving * 12;
@@ -339,9 +345,9 @@ export function compareItems(oldItems, newItems, today = new Date(), opts = {}) 
     removed: removed.map((o) => ({ item: o, deltaMonthly: -eff(o) })),
     changed, unchanged, same, categories,
     totals: {
-      before: { income: a.income, expense: a.expense, saving: a.saving, net: a.net },
-      after: { income: b.income, expense: b.expense, saving: b.saving, net: b.net },
-      delta: { income: b.income - a.income, expense: b.expense - a.expense, saving: b.saving - a.saving, net: b.net - a.net },
+      before: { income: a.income, expense: a.expense, saving: a.saving, net: a.left ?? a.net },
+      after: { income: b.income, expense: b.expense, saving: b.saving, net: b.left ?? b.net },
+      delta: { income: b.income - a.income, expense: b.expense - a.expense, saving: b.saving - a.saving, net: (b.left ?? b.net) - (a.left ?? a.net) },
     },
   };
 }
@@ -407,11 +413,103 @@ export function personSummary(items, { jointAccounts = [], jointSplit = null, pe
   let split = jointSplit && Object.values(jointSplit).some((p) => Number(p) > 0) ? jointSplit : null;
   if (!split) split = Object.fromEntries(names.map((n) => [n, 100 / (names.length || 1)]));
   const total = Object.entries(split).filter(([n]) => persons[n]).reduce((s, [, p]) => s + Number(p || 0), 0);
+  // Overført for meget til en konto → den del er "parkeret" dér og ikke til forbrug.
+  const funding = accountFunding(items, { savingsAccounts, today });
+  const parked = {};
+  for (const f of funding) {
+    if (!f.excess) continue;
+    const shares = {};
+    let tot = 0;
+    for (const it of items) {
+      if (!isTransfer(it) || it.toAccount !== f.account || !countsInBudget(it, now)) continue;
+      for (const [name, amt] of Object.entries(shareOf(it, []).parts)) {
+        if (name === JOINT) continue;
+        shares[name] = (shares[name] || 0) + amt; tot += amt;
+      }
+    }
+    for (const [name, amt] of Object.entries(shares)) parked[name] = (parked[name] || 0) + (tot ? (f.excess * amt) / tot : 0);
+  }
   for (const n of names) {
     const p = persons[n];
     p.jointContribution = total > 0 ? (jointNeed * Number(split[n] || 0)) / total : 0;
     p.totalOut = p.ownExpense + p.jointContribution;
-    p.left = p.income - p.totalOut - p.saving;
+    p.parked = parked[n] || 0;
+    p.left = p.income - p.totalOut - p.saving - p.parked;
   }
   return { persons: Object.values(persons), joint: { ...joint, need: jointNeed }, split };
+}
+
+// ---------- Konti: overføres der nok? Hvad kan vi bruge? ----------
+/**
+ * Pr. konto (ikke opsparing): hvad kommer ind via overførsler, hvad skal kontoen bruge,
+ * og overføres der for meget eller for lidt?
+ *  needs     = regninger + overførsler væk fra kontoen − indtægter direkte på kontoen (kr./md.)
+ *  diff      = overført ind − needs   (> 0: for meget, < 0: mangler)
+ *  excess    = den del af overførslerne, der hober sig op på kontoen (bruges til "Tilbage af lønnen")
+ * Kun konti der modtager overførsler tages med (fx Budgetkonto — ikke Lønkonto).
+ */
+export function accountFunding(items, { savingsAccounts = [], today = new Date(), tolerance = 200 } = {}) {
+  const now = dateToIndex(today);
+  const acc = {};
+  const get = (a) => (acc[a] ??= { account: a, transferIn: 0, income: 0, expense: 0, transferOut: 0 });
+  for (const it of items) {
+    if (!countsInBudget(it, now)) continue;
+    const m = monthly(it);
+    if (it.type === 'income' && it.account) get(it.account).income += m;
+    else if (it.type === 'expense' && it.account) get(it.account).expense += m;
+    else if (isTransfer(it) && it.account !== it.toAccount) {
+      if (it.toAccount) get(it.toAccount).transferIn += m;
+      if (it.account) get(it.account).transferOut += m;
+    }
+  }
+  return Object.values(acc)
+    .filter((a) => a.transferIn > 0 && !savingsAccounts.includes(a.account))
+    .map((a) => {
+      const needs = Math.max(0, a.expense + a.transferOut - a.income);
+      const diff = a.transferIn - needs;
+      const status = Math.abs(diff) <= tolerance ? 'ok' : diff > 0 ? 'over' : 'under';
+      return { ...a, needs, diff, status, excess: diff > 0 ? Math.min(diff, a.transferIn) : 0 };
+    });
+}
+
+/**
+ * "Hvor meget kan vi bruge af kontoen?" — gennemgår alle betalinger 12 mdr. frem.
+ * Det laveste saldoen kommer ned på, er det man kan tage ud i dag (minus en evt. buffer).
+ * Returnerer { canSpend, missing, missingDate, nextBig: {name, amount, date} | null }.
+ */
+export function spendable(items, account, balance, today = new Date(), { buffer = 0, bigWithinDays = 120 } = {}) {
+  const cf = projectCashflow(items, balance, today, 12, { account });
+  const low = cf.lowest.amount;
+  let nextBig = null;
+  const limit = new Date(today.getFullYear(), today.getMonth(), today.getDate() + bigWithinDays);
+  for (const m of cf.months) {
+    for (const e of m.events) {
+      if (e.amount >= 0) continue;
+      const [y, mo] = m.ym.split('-').map(Number);
+      const date = new Date(y, mo - 1, e.day);
+      if (date > limit) continue;
+      if (!nextBig || -e.amount > nextBig.amount) nextBig = { name: e.name, amount: -e.amount, date };
+    }
+  }
+  return {
+    canSpend: Math.max(0, Math.round((low - buffer) * 100) / 100),
+    missing: low < 0 ? -low : 0,
+    missingDate: low < 0 ? cf.lowest.date : null,
+    lowest: low,
+    nextBig,
+  };
+}
+
+/** De næste n betalinger af en post fra i dag (bruges i formularen: "Næste betaling: …"). */
+export function upcomingPayments(item, today = new Date(), n = 3) {
+  const out = [];
+  const now = dateToIndex(today);
+  const day = today.getDate();
+  for (let mi = now; mi < now + 60 && out.length < n; mi++) {
+    if (!paysIn(item, mi)) continue;
+    const d = payDayIn(item, mi);
+    if (mi === now && d <= day) continue;
+    out.push(indexToDate(mi, d));
+  }
+  return out;
 }

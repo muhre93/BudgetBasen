@@ -114,7 +114,7 @@ function buildReport(form) {
   }
   return {
     title: form.title.value.trim() || state.budget.name, generated: isoDate(), opts,
-    totals: { income: s.income, expense: s.expense, saving: s.saving, net: s.net, yearNet: s.yearNet },
+    totals: { income: s.income, expense: s.expense, saving: s.saving, net: s.left, yearNet: s.yearLeft },
     sections, cashflow,
   };
 }

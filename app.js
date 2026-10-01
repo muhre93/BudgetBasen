@@ -5,18 +5,24 @@ import {
   db, auth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut,
   collection, query, where, onSnapshot, doc, setDoc, serverTimestamp,
 } from './js/firebase.js';
-import { state, emit, onChange, roleLabel } from './js/state.js';
+import { state, emit, onChange, roleLabel, canEdit } from './js/state.js';
 import { $, $$, esc, toast, errorToast, lsGet, lsSet, firstName, confirmDialog } from './js/ui.js';
 import { createBudget, loadMyInvites, acceptInvite, declineInvite, ensureAutoSnapshot, watchVisible, createDemoBudget, resetDemoBudget, deleteBudgetCompletely } from './js/data.js';
 import { maybeShowWelcome, setDemoHandler } from './js/help.js';
+import { loadUserPrefs, toggleDayNight, onPrefs, getPrefs, setPrefs, isSimple } from './js/prefs.js';
 import * as budgetView from './js/views/budget.js';
 import * as cashflowView from './js/views/cashflow.js';
 import * as receiptsView from './js/views/receipts.js';
 import * as documentsView from './js/views/documents.js';
 import * as adminView from './js/views/admin.js';
 import { renderPublicShare } from './js/views/share.js';
+import * as bankView from './js/views/bank.js';
+import * as ownerView from './js/views/owner.js';
+import { stashCallback } from './js/bank.js';
+import { startConfig, onConfig, feature, getConfig, isAppOwner } from './js/config.js';
 
-const VIEWS = { budget: budgetView, cashflow: cashflowView, receipts: receiptsView, documents: documentsView, admin: adminView };
+const VIEWS = { budget: budgetView, cashflow: cashflowView, receipts: receiptsView, documents: documentsView, bank: bankView, admin: adminView, owner: ownerView };
+let pendingBankCallback = false;
 
 // ---------- Start ----------
 const shareToken = new URLSearchParams(location.search).get('share');
@@ -25,17 +31,25 @@ else initApp();
 
 function initApp() {
   registerServiceWorker();
+  pendingBankCallback = stashCallback();
+  startConfig();
+  onConfig(() => { applyConfig(); $('#main').dataset.shell = ''; render(); });
+  applyConfig();
   $('#btn-login').onclick = login;
   getRedirectResult(auth).catch((e) => e.code !== 'auth/no-auth-event' && errorToast(e));
   adminView.setSelectBudget(selectBudget);
   setDemoHandler(openDemo);
 
   const hashView = location.hash.slice(1);
-  state.view = VIEWS[hashView] ? hashView : lsGet('bb:view', 'budget');
+  state.view = pendingBankCallback ? 'bank' : VIEWS[hashView] ? hashView : lsGet('bb:view', 'budget');
   $$('#tabs [data-view]').forEach((b) => (b.onclick = () => setView(b.dataset.view)));
   window.addEventListener('hashchange', () => { const v = location.hash.slice(1); if (VIEWS[v] && v !== state.view) setView(v); });
   $('#budget-switch').onchange = (e) => selectBudget(e.target.value);
   $('#btn-user').onclick = userMenu;
+  $('#btn-daynight').onclick = () => toggleDayNight();
+  const dn = () => { const n = getPrefs().mode === 'night'; $('#btn-daynight').textContent = n ? '☀️' : '🌙'; $('#btn-daynight').title = n ? 'Skift til dag' : 'Skift til nat'; };
+  onPrefs(() => { dn(); $('#main').dataset.shell = ''; render(); });
+  dn();
   onChange(render);
 
   onAuthStateChanged(auth, async (user) => {
@@ -46,6 +60,7 @@ function initApp() {
     $('#login').classList.add('hidden');
     $('#app').classList.remove('hidden');
     $('#avatar').src = user.photoURL || 'icons/icon.svg';
+    loadUserPrefs(user.uid);
     setDoc(doc(db, 'users', user.uid), {
       displayName: user.displayName || '', email: (user.email || '').toLowerCase(), photoURL: user.photoURL || '', lastLogin: serverTimestamp(),
     }, { merge: true }).catch(console.warn);
@@ -154,11 +169,49 @@ function setView(v) {
   render();
 }
 
+/** Hvilke faner må vises lige nu (Ejer-admin-funktioner, simpel visning, budgettets bank-indstilling). */
+function viewAllowed(v) {
+  if (v === 'receipts') return feature('receipts');
+  if (v === 'documents') return feature('documents') && !isSimple();
+  if (v === 'bank') return feature('bank') && state.budget?.settings?.bank === true && canEdit();
+  if (v === 'owner') return isAppOwner(state.user);
+  return !!VIEWS[v];
+}
+
+/** Tekster og funktioner fra Ejer-admin, som ikke hører til en bestemt fane. */
+function applyConfig() {
+  const c = getConfig();
+  const L = c.texts?.login || {};
+  const tag = $('#login-tagline'); if (tag) { tag.dataset.def ??= tag.textContent; tag.textContent = L.tagline || tag.dataset.def; }
+  const foot = $('#login-foot'); if (foot) { foot.dataset.def ??= foot.textContent; foot.textContent = L.foot || foot.dataset.def; }
+  $$('#login-points li').forEach((li, i) => { li.dataset.def ??= li.textContent; li.textContent = L.points?.[i] || li.dataset.def; });
+  document.body.classList.toggle('no-export', !feature('export'));
+  document.body.classList.toggle('no-compare', !feature('compare'));
+  document.body.classList.toggle('no-demo', !feature('demo'));
+  document.body.classList.toggle('no-simple', !feature('simple'));
+}
+
+function renderAnnouncement() {
+  const a = getConfig().announcement;
+  const box = $('#announce');
+  if (!a?.active || !a.text || lsGet(`bb:ann:${a.id}`, false)) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="announce ${a.level === 'warn' ? 'warn' : ''}"><span>${a.level === 'warn' ? '⚠️' : '📣'} ${esc(a.text)}</span><button class="icon-btn" aria-label="Luk beskeden">✕</button></div>`;
+  box.querySelector('button').onclick = () => { lsSet(`bb:ann:${a.id}`, true); box.innerHTML = ''; };
+}
+
 function render() {
   if (!state.user) return;
   renderInvites();
   renderDemoBar();
+  renderAnnouncement();
+  document.body.classList.toggle('simple', isSimple());
+  $$('#tabs [data-view]').forEach((b) => b.classList.toggle('hidden', !viewAllowed(b.dataset.view)));
+  if (state.budget && !viewAllowed(state.view)) state.view = 'budget';
   $$('#tabs [data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
+  if (state.budget && pendingBankCallback) {
+    pendingBankCallback = false;
+    bankView.handleBankCallback(selectBudget, setView);
+  }
   $('#role-badge').textContent = roleLabel();
   const main = $('#main');
   if (!state.budget) {
@@ -243,10 +296,16 @@ function userMenu() {
   const m = document.createElement('div');
   m.className = 'user-menu glass';
   m.innerHTML = `<div class="um-head"><b>${esc(u.displayName || '')}</b><span class="muted small">${esc(u.email || '')}</span></div>
+    <button data-simple class="${feature('simple') ? '' : 'hidden'}">${isSimple() ? '🧩 Skift til udvidet visning' : '✨ Skift til simpel visning'}</button>
+    <button data-look>🎨 Udseende</button>
     <button data-go="admin">⚙ Admin & indstillinger</button>
+    ${isAppOwner(u) ? '<button data-owner>👑 Ejer-admin</button>' : ''}
     <button data-logout>↪ Log ud</button>`;
   document.body.appendChild(m);
   m.querySelector('[data-go]').onclick = () => { m.remove(); setView('admin'); };
+  m.querySelector('[data-simple]').onclick = () => { m.remove(); setPrefs({ simple: !isSimple() }); toast(isSimple() ? 'Simpel visning er slået til' : 'Udvidet visning er slået til'); };
+  m.querySelector('[data-owner]')?.addEventListener('click', () => { m.remove(); setView('owner'); });
+  m.querySelector('[data-look]').onclick = () => { m.remove(); adminView.openTab('look'); setView('admin'); };
   m.querySelector('[data-logout]').onclick = async () => { m.remove(); await signOut(auth); location.hash = ''; };
   setTimeout(() => document.addEventListener('click', function off(e) { if (!m.contains(e.target)) { m.remove(); document.removeEventListener('click', off); } }), 0);
 }

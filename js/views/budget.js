@@ -1,6 +1,9 @@
 // Budget-fanen: nøgletal i hverdagssprog, hvem betaler hvad, kontosaldo og alle poster med filter.
 // Skallen (søgefelt, filtre, knapper) bygges én gang; kun tal og liste opdateres,
 // så tastaturet ikke lukker, mens man søger.
+import { isSimple } from '../prefs.js';
+import { getConfig, SECTIONS } from '../config.js';
+import { renderSimple } from './simple.js';
 import { state, canEdit, lists, jointAccounts, savingsAccounts, isShared, visibilityLabel, defaultVisibleTo, TYPE_PLURAL, TYPE_LABEL } from '../state.js';
 import {
   esc, kr, krSigned, fmtYm, fmtDate, openModal, confirmDialog, toast, parseAmount, numToInput,
@@ -8,7 +11,7 @@ import {
 } from '../ui.js';
 import {
   monthly, summarize, calendarYear, requiredBalance, nextPayment, freqLabel, countsInBudget, dateToIndex, ymToIndex,
-  indexToYm, paysIn, personSummary, shareOf, touchesAccount, isTransfer,
+  indexToYm, paysIn, personSummary, shareOf, touchesAccount, isTransfer, accountFunding, spendable, upcomingPayments,
 } from '../calc.js';
 import { saveItem, deleteItem, saveBalances, budgetRef } from '../data.js';
 import { updateDoc, serverTimestamp } from '../firebase.js';
@@ -35,6 +38,7 @@ const ICON = {
 
 // ---------------------------------------------------------------------
 export function render(root) {
+  if (isSimple()) { root.dataset.shell = 'simple'; renderSimple(root); return; }
   const L = lists();
   const key = `budget:${state.budgetId}:${canEdit()}:${JSON.stringify([L.people, L.categories, L.accounts, L.frequencies.map((f) => f.months)])}`;
   if (root.dataset.shell !== key) buildShell(root, L, key);
@@ -47,6 +51,7 @@ function buildShell(root, L, key) {
   root.innerHTML = `<div class="view-wrap">
     <section class="acct-view" id="b-view"></section>
     <section class="kpis" id="b-kpis"></section>
+    <section class="funding" id="b-funding"></section>
     <section id="b-persons"></section>
     <section id="b-balances"></section>
     <section class="toolbar glass">
@@ -131,7 +136,21 @@ function viewAccounts(L) {
   return L.accounts.filter((a) => used.has(a)).concat([...used].filter((a) => !L.accounts.includes(a)));
 }
 
+/** Rækkefølge og skjulte kasser fra Ejer-admin. */
+function applyLayout(root) {
+  const { order, hidden } = getConfig().layout;
+  const w = root.firstElementChild;
+  const listPos = order.indexOf('list');
+  for (const el of w.children) {
+    const sec = SECTIONS.find((x) => x.el && el.matches(x.el));
+    const id = sec ? sec.id : 'list';
+    el.style.order = String(id === 'list' ? listPos : order.indexOf(id));
+    el.classList.toggle('layout-hidden', hidden.includes(id));
+  }
+}
+
 function update(root) {
+  applyLayout(root);
   const today = new Date();
   const L = lists();
   const accs = viewAccounts(L);
@@ -149,16 +168,15 @@ function update(root) {
     <span class="av-label">Vis ${helpBtn('accountView')}</span>
     <div class="av-chips">
       <button type="button" class="av-chip ${!ui.view ? 'on' : ''}" data-view-acc="">🏠 Hele budgettet</button>
-      ${accs.map((a) => `<button type="button" class="av-chip ${ui.view === a ? 'on' : ''}" data-view-acc="${esc(a)}">${savingsAccounts().includes(a) ? '🐷' : jointAccounts().includes(a) ? '👨‍👩‍👧' : '💳'} ${esc(a)}</button>`).join('')}
+      ${accs.map((a) => `<button type="button" class="av-chip ${ui.view === a ? 'on' : ''}" data-view-acc="${esc(a)}">${accIcon(a)} ${esc(a)}</button>`).join('')}
     </div>` : '';
 
-  const leftSub = sum.net >= 0 ? '🟢 Der er penge tilovers' : '🔴 Der går flere penge ud end ind';
   if (!ui.view) {
     q('#b-kpis').innerHTML = `
       ${kpi('Indtægter hver måned', kr(sum.income), 'pos', 'in', `${kr(sum.yearIncome, false)} om året`)}
       ${kpi('Udgifter hver måned', kr(sum.expense), 'neg', 'out', `${kr(sum.yearExpense, false)} om året`)}
       ${kpi('Opsparing hver måned', kr(sum.saving), 'save', 'saving', `${kr(sum.yearSaving, false)} om året`)}
-      ${kpi('Tilbage af lønnen', kr(sum.net), sum.net >= 0 ? 'pos' : 'neg', 'left', `${leftSub} · ${kr(sum.yearNet, false)} om året`)}`;
+      ${kpi('Tilbage af lønnen', kr(sum.left), sum.left >= 0 ? 'pos' : 'neg', 'left', sum.excess > 0.5 ? `Til forbrug · ${kr(sum.excess, false)} ekstra står på ${sum.funding.filter((f) => f.excess > 0.5).map((f) => f.account).join(' og ')}` : `${sum.left >= 0 ? '🟢 Der er penge tilovers' : '🔴 Der går flere penge ud end ind'} · ${kr(sum.yearLeft, false)} om året`)}`;
   } else if (isSav) {
     const now = Number(bal?.amount) || 0;
     q('#b-kpis').innerHTML = `
@@ -173,6 +191,8 @@ function update(root) {
       ${kpi(`Tilbage på ${ui.view}`, kr(sum.net), sum.net >= 0 ? 'pos' : 'neg', 'acctLeft', sum.net >= 0 ? '🟢 Kontoen hænger sammen' : '🔴 Der går mere ud end ind')}
       ${kpi('Står på kontoen nu', bal ? kr(bal.amount) : '–', 'acct', 'budgetkonto', bal ? `skrevet ${fmtDate(bal.date)}` : 'skriv saldoen nedenfor')}`;
   }
+  const funding = accountFunding(allItems, { savingsAccounts: savingsAccounts(), today }).filter((f) => !ui.view || f.account === ui.view);
+  q('#b-funding').innerHTML = funding.map(fundingLine).join('');
   q('#b-persons').innerHTML = ui.view ? '' : personsHtml(allItems, L);
   q('#b-balances').innerHTML = balancesHtml(allItems, today, ui.view);
 
@@ -185,6 +205,20 @@ function update(root) {
     : allItems.length === 0 ? emptyHtml() : items.length === 0 ? `<div class="empty glass small"><p>Der er ingen poster på ${esc(ui.view)} endnu.</p></div>` : groupsHtml(items, today, L);
 }
 
+const accIcon = (a) => (savingsAccounts().includes(a) ? '💵' : jointAccounts().includes(a) ? '👨‍👩‍👧' : '💳');
+
+/** Én linje pr. konto der får overførsler: passer / for meget / mangler. */
+function fundingLine(f) {
+  const cls = f.status === 'ok' ? 'ok' : f.status === 'over' ? 'warn' : 'neg';
+  const icon = f.status === 'ok' ? '🟢' : f.status === 'over' ? '🟡' : '🔴';
+  const txt = f.status === 'ok'
+    ? `<b>${esc(f.account)} passer.</b> I overfører ${kr(f.transferIn, false)}, og regningerne koster ${kr(f.needs, false)} om måneden.`
+    : f.status === 'over'
+      ? `<b>${esc(f.account)}: I overfører ${kr(f.diff, false)} for meget hver måned.</b> I overfører ${kr(f.transferIn, false)}, men regningerne koster ${kr(f.needs, false)} om måneden. Pengene samler sig på kontoen.`
+      : `<b>${esc(f.account)} mangler ${kr(-f.diff, false)} hver måned.</b> I overfører ${kr(f.transferIn, false)}, men regningerne koster ${kr(f.needs, false)} om måneden. Hæv overførslen til ca. ${kr(Math.ceil(f.needs / 100) * 100, false)} om måneden.`;
+  return `<div class="fund-line ${cls}"><span class="fl-ico">${icon}</span><span>${txt}</span></div>`;
+}
+
 const kpi = (label, value, cls, help, sub) => `
   <div class="kpi glass ${cls}"><div class="kpi-label">${esc(label)} ${helpBtn(help)}</div><div class="kpi-value">${value}</div><div class="kpi-sub">${esc(sub)}</div></div>`;
 
@@ -193,7 +227,7 @@ function emptyHtml() {
     <div class="empty-emoji">🧾</div>
     <h3>Budgettet er tomt</h3>
     <p>Start med det, der kommer ind (løn, børnepenge), og tilføj derefter de faste regninger (husleje, forsikringer, abonnementer).</p>
-    ${canEdit() ? `<div class="row-center"><button class="btn success" data-act="add-income">＋ Første indtægt</button><button class="btn primary" data-act="add-expense">＋ Første udgift</button></div>` : ''}
+    ${canEdit() ? `<div class="row-center"><button class="btn primary" data-act="add-expense">＋ Første udgift</button><button class="btn success" data-act="add-income">＋ Første indtægt</button></div>` : ''}
   </div>`;
 }
 
@@ -202,15 +236,17 @@ function personsHtml(items, L) {
   const people = L.people.filter((p) => p !== 'Fælles');
   if (!items.length || !people.length) return '';
   const js = state.budget.settings?.jointSplit;
-  const s = personSummary(items, { jointAccounts: jointAccounts(), jointSplit: js, people, savingsAccounts: savingsAccounts() });
+  const showJoint = state.budget.settings?.showJoint !== false;
+  const s = personSummary(items, { jointAccounts: showJoint ? jointAccounts() : [], jointSplit: js, people, savingsAccounts: savingsAccounts() });
   const cards = s.persons.map((p) => `
     <button class="person-card glass" data-person-card="${esc(p.name)}" title="Vis ${esc(p.name)}s poster">
       <div class="pc-name">${esc(p.name)}</div>
       <div class="pc-total"><span>Skal af med</span><b>${kr(p.totalOut, false)}</b><small>/md.</small></div>
       <div class="pc-lines">
         <div><span>Egne regninger</span><span>${kr(p.ownExpense, false)}</span></div>
-        <div><span>Til fælles (${Math.round((p.jointContribution / (s.joint.need || 1)) * 100) || 0} %)</span><span>${kr(p.jointContribution, false)}</span></div>
+        ${showJoint || p.jointContribution > 0.5 ? `<div><span>${showJoint ? "Til fælles" : "Delte regninger"} (${Math.round((p.jointContribution / (s.joint.need || 1)) * 100) || 0} %)</span><span>${kr(p.jointContribution, false)}</span></div>` : ''}
         ${p.saving ? `<div><span>Opsparing</span><span>${kr(p.saving, false)}</span></div>` : ''}
+        ${p.parked > 0.5 ? `<div class="warn-line"><span>Overført ekstra</span><span>${kr(p.parked, false)}</span></div>` : ''}
         <div class="sep"><span>Indtægter</span><span>${kr(p.income, false)}</span></div>
         <div class="${p.left >= 0 ? 'pos' : 'neg'}"><span>Tilbage til sig selv</span><b>${kr(p.left, false)}</b></div>
       </div>
@@ -226,8 +262,9 @@ function personsHtml(items, L) {
       </div>
       ${canEdit() ? '<button class="btn small ghost" data-act="joint">Ret fordeling / fælleskonti</button>' : ''}
     </div>`;
-  return `<div class="section-title"><h2>Hvem betaler hvad ${helpBtn('persons')}</h2><span class="muted small">Tryk på en person for at se deres poster</span></div>
-    <div class="person-grid">${cards}${joint}</div>`;
+  return `<div class="section-title"><h2>Hvem betaler hvad ${helpBtn('persons')}</h2>
+      <span class="st-actions"><span class="muted small">Tryk på en person for at se deres poster</span>${!showJoint && canEdit() ? '<button class="btn small ghost" data-act="joint">Fælles-indstillinger</button>' : ''}</span></div>
+    <div class="person-grid">${cards}${showJoint ? joint : ''}</div>`;
 }
 
 function openJointModal() {
@@ -235,15 +272,22 @@ function openJointModal() {
   const people = L.people.filter((p) => p !== 'Fælles');
   const ja = jointAccounts();
   const js = state.budget.settings?.jointSplit || {};
+  const showJoint = state.budget.settings?.showJoint !== false;
   const body = `
+    <label class="check big-check"><input type="checkbox" name="showJoint" ${showJoint ? 'checked' : ''}> Vis "Fælles" under Hvem betaler hvad</label>
+    <p class="muted small">Slå fra, hvis du er alene om budgettet eller I ikke har en fælles konto.</p>
+    <div class="joint-settings">
     <p class="muted small">Poster der trækkes fra (eller går ind på) en fælleskonto, deles automatisk som fælles. Vælg hvilke konti der er fælles:</p>
     <div class="checks">${L.accounts.map((a) => `<label class="check"><input type="checkbox" name="ja" value="${esc(a)}" ${ja.includes(a) ? 'checked' : ''}> ${esc(a)}</label>`).join('')}</div>
     <p class="muted small">Hvor stor en del af det, fælleskontoen mangler, skal hver person overføre?</p>
     ${people.map((p) => `<label class="split-row"><span>${esc(p)}</span><span class="pct"><input type="number" min="0" max="100" name="js_${esc(p)}" data-p="${esc(p)}" value="${js[p] ?? Math.round(100 / people.length)}"> %</span></label>`).join('')}
-    <p class="small" id="js-sum"></p>`;
+    <p class="small" id="js-sum"></p>
+    </div>`;
   openModal({
     title: 'Fælles udgifter', body, submitLabel: 'Gem',
     onOpen: (f) => {
+      const tog = () => f.querySelector('.joint-settings').classList.toggle('hidden', !f.showJoint.checked);
+      f.showJoint.addEventListener('change', tog); tog();
       const upd = () => { const s = [...f.querySelectorAll('[data-p]')].reduce((a, i) => a + (Number(i.value) || 0), 0); const el = f.querySelector('#js-sum'); el.textContent = `I alt ${s} %`; el.className = `small ${s === 100 ? 'pos' : 'neg'}`; };
       f.addEventListener('input', upd); upd();
     },
@@ -251,8 +295,9 @@ function openJointModal() {
       const split = {};
       f.querySelectorAll('[data-p]').forEach((i) => (split[i.dataset.p] = Number(i.value) || 0));
       const sum = Object.values(split).reduce((a, b) => a + b, 0);
-      if (people.length && Math.abs(sum - 100) > 0.01) { toast('Procenterne skal give 100 i alt', 'error'); return false; }
-      await updateDoc(budgetRef(), { 'settings.jointAccounts': fd.getAll('ja'), 'settings.jointSplit': split, updatedAt: serverTimestamp() });
+      const on = f.showJoint.checked;
+      if (on && people.length && Math.abs(sum - 100) > 0.01) { toast('Procenterne skal give 100 i alt', 'error'); return false; }
+      await updateDoc(budgetRef(), { 'settings.showJoint': on, 'settings.jointAccounts': on ? fd.getAll('ja') : [], 'settings.jointSplit': split, updatedAt: serverTimestamp() });
       toast('Fordeling gemt');
     },
   });
@@ -263,25 +308,21 @@ function balancesHtml(items, today, only = '') {
   const balances = (state.budget.settings?.balances || []).filter((b) => !only || b.account === only);
   const stale = balances.some((b) => b.date && (today - new Date(b.date)) / 864e5 > 7);
   const rows = balances.map((b) => {
-    const r = requiredBalance(items, b.account, today);
-    const diff = (Number(b.amount) || 0) - r.required;
-    const hasExp = r.rows.length > 0 || r.monthlyTransfer > 0;
-    const salaryAcc = items.some((i) => i.type === 'income' && i.active !== false && i.account === b.account && monthly(i) >= r.monthlyTransfer * 0.5);
-    const isSav = savingsAccounts().includes(b.account);
-    if ((salaryAcc || isSav) && hasExp !== undefined) {
-      return `<div class="bal-row">
-        <div class="bal-acc"><b>${esc(b.account)}</b><span class="muted small">opdateret ${fmtDate(b.date)}</span></div>
-        <div class="bal-amt">${kr(b.amount)}</div>
-        <div class="bal-status muted small">${isSav ? '🐷 Opsparingskonto — se hvor meget den vokser ved at vælge den øverst' : '💳 Lønnen går ind her — se under Likviditet, om kontoen holder hele måneden'}</div>
-      </div>`;
+    const touches = items.some((i) => i.active !== false && touchesAccount(i, b.account));
+    const sp = touches ? spendable(items, b.account, Number(b.amount) || 0, today) : null;
+    let status;
+    if (!sp) status = '<div class="bal-status muted small">Der er ingen poster på denne konto endnu</div>';
+    else if (sp.missing > 0) {
+      status = `<div class="bal-status neg"><span>🔴 Der mangler ${kr(sp.missing)} den ${fmtDate(sp.missingDate)}</span>
+        <span class="muted small">Sæt penge ind inden da, eller hæv den faste overførsel.</span></div>`;
+    } else {
+      status = `<div class="bal-status pos"><span>🟢 Du kan bruge ${kr(sp.canSpend)}</span>
+        <span class="muted small">${sp.canSpend > 0 ? 'uden at mangle til regningerne det næste år' : 'Alt på kontoen skal bruges til kommende regninger'}${sp.nextBig ? ` · næste store: ${esc(sp.nextBig.name)} ${kr(sp.nextBig.amount, false)} den ${fmtDate(sp.nextBig.date)}` : ''}</span></div>`;
     }
     return `<div class="bal-row">
-      <div class="bal-acc"><b>${esc(b.account)}</b><span class="muted small">opdateret ${fmtDate(b.date)}</span></div>
+      <div class="bal-acc"><b>${accIcon(b.account)} ${esc(b.account)}</b><span class="muted small">${b.source === 'bank' ? '🏦 hentet fra banken' : 'opdateret'} ${fmtDate(b.date)}</span></div>
       <div class="bal-amt">${kr(b.amount)}</div>
-      ${hasExp ? `<div class="bal-status ${diff >= 0 ? 'pos' : 'neg'}">
-          <span>${diff >= 0 ? `🟢 Der er ${kr(diff)} mere end nødvendigt` : `🔴 Der mangler ${kr(-diff)}`}</span>
-          <span class="muted small">Der bør stå ${kr(r.required)} · husk at overføre ${kr(r.monthlyTransfer)} hver måned</span>
-        </div>` : '<div class="bal-status muted small">Der trækkes ingen regninger fra denne konto</div>'}
+      ${status}
     </div>`;
   }).join('');
   return `<section class="balances glass">
@@ -289,7 +330,7 @@ function balancesHtml(items, today, only = '') {
       <h2>Hvad står der på kontoen? ${helpBtn('budgetkonto')}</h2>
       ${canEdit() ? '<button class="btn small ghost" data-act="balances">Skriv saldo</button>' : ''}
     </div>
-    ${balances.length ? rows : '<p class="muted">Skriv hvad der står på budgetkontoen i netbanken, så kan appen fortælle om der er penge nok til de kommende regninger.</p>'}
+    ${balances.length ? rows : '<p class="muted">Skriv hvad der står på kontoen i netbanken, så kan appen fortælle hvor meget I kan bruge uden at mangle til regningerne.</p>'}
     ${stale ? '<p class="hint warn">Mindst én saldo er over en uge gammel — skriv den nye saldo for at få præcise tal.</p>' : ''}
   </section>`;
 }
@@ -432,14 +473,21 @@ function itemRow(it, today, L) {
 // ---------- Opret / redigér post ----------
 const HINT_FIELDS = ['name', 'amount', 'freq', 'startMonth', 'payDay', 'endMonth', 'category', 'who', 'supplier', 'method', 'account', 'toAccount'];
 const TYPE_TEXT = {
-  expense: { who: 'Hvem betaler', supplier: 'Leverandør', account: 'Trækkes fra konto', ph: 'fx Husleje, Bilforsikring' },
-  income: { who: 'Hvem får pengene', supplier: 'Afsender', account: 'Går ind på konto', ph: 'fx Løn, Børnepenge' },
-  transfer: { who: 'Hvem sparer op / overfører', supplier: 'Modtager (valgfri)', account: 'Fra konto', ph: 'fx Opsparing, Overførsel til budgetkonto' },
+  expense: { who: 'Hvem betaler', account: 'Trækkes fra konto', ph: 'fx Husleje, Bilforsikring', help: 'En regning eller fast udgift, fx husleje eller forsikring.' },
+  income: { who: 'Hvem får pengene', account: 'Går ind på konto', ph: 'fx Løn, Børnepenge', help: 'Penge der kommer ind, fx løn eller børnepenge.' },
+  transfer: { who: 'Hvem overfører', account: 'Fra konto', ph: 'fx Opsparing, Til budgetkontoen', help: 'Penge der flyttes mellem jeres egne konti, fx fast opsparing eller overførsel til budgetkontoen.' },
 };
+const MONTHS_DA = ['jan.', 'feb.', 'mar.', 'apr.', 'maj', 'jun.', 'jul.', 'aug.', 'sep.', 'okt.', 'nov.', 'dec.'];
+const shortDate = (d) => `${d.getDate()}. ${MONTHS_DA[d.getMonth()]} ${d.getFullYear()}`;
 
 export function openItemModal(item = null, type = 'expense') {
   const editing = !!item?.id;
-  const it = item || { type, freq: 1, payDay: 1, startMonth: currentYm(), active: true, account: type === 'expense' ? 'Budgetkonto' : 'Lønkonto', toAccount: type === 'transfer' ? (savingsAccounts()[0] || '') : '', category: type === 'transfer' ? 'Opsparing' : '', visibleTo: defaultVisibleTo() };
+  const it = item || {
+    type, freq: 1, payDay: 1, startMonth: currentYm(), active: true,
+    account: type === 'expense' ? 'Budgetkonto' : 'Lønkonto',
+    toAccount: type === 'transfer' ? (savingsAccounts()[0] || '') : '',
+    category: '', visibleTo: defaultVisibleTo(),
+  };
   const readOnly = !canEdit();
   const t = it.type;
   const hist = [...(it.history || [])].reverse();
@@ -447,40 +495,53 @@ export function openItemModal(item = null, type = 'expense') {
 
   const body = `
     ${last ? `<div class="last-change">✏️ Sidst ændret ${fmtDate(new Date(last.at), true)} af ${esc(last.by)}: ${changesText(last.changes)}</div>` : ''}
-    <div class="seg3 type-seg" role="radiogroup">
+    <div class="seg3 type-seg" role="radiogroup" aria-label="Type">
       <label><input type="radio" name="type" value="expense" ${t === 'expense' ? 'checked' : ''}><span>Udgift</span></label>
       <label><input type="radio" name="type" value="income" ${t === 'income' ? 'checked' : ''}><span>Indtægt</span></label>
       <label><input type="radio" name="type" value="transfer" ${t === 'transfer' ? 'checked' : ''}><span>Overførsel</span></label>
     </div>
     <p class="muted small type-help" data-type-help></p>
-    <label>Hvad hedder den?<input name="name" required maxlength="120" value="${esc(it.name)}" placeholder="${TYPE_TEXT[t].ph}"></label>
-    <div class="grid2">
-      <label>Beløb hver gang (kr.)<input name="amount" required inputmode="decimal" value="${numToInput(it.amount)}" placeholder="0,00"></label>
-      <label><span>Hvor ofte ${helpBtn('freq')}</span>${freqSelect('freq', it.freq)}</label>
-    </div>
-    <div class="calc-preview" id="calc-preview"></div>
-    <div class="grid3">
-      <label>Første/næste betaling<input type="month" name="startMonth" value="${esc(it.startMonth || '')}" required></label>
-      <label>Dag i måneden<input type="number" name="payDay" min="1" max="31" value="${esc(it.payDay || 1)}" required></label>
+
+    <section class="fgroup">
+      <h3 class="fgroup-title">Hvad og hvor meget</h3>
+      <label>Hvad hedder den?<input name="name" required maxlength="120" value="${esc(it.name)}" placeholder="${TYPE_TEXT[t].ph}"></label>
+      <div class="pair">
+        <label>Beløb hver gang (kr.)<input name="amount" required inputmode="decimal" value="${numToInput(it.amount)}" placeholder="0,00"></label>
+        <label><span class="lbl">Hvor ofte ${helpBtn('freq')}</span>${freqSelect('freq', it.freq)}</label>
+      </div>
+      <div class="calc-preview" id="calc-preview"></div>
+    </section>
+
+    <section class="fgroup">
+      <h3 class="fgroup-title">Hvornår</h3>
+      <div class="pair">
+        <label>Første gang (måned)<input type="month" name="startMonth" value="${esc(it.startMonth || '')}" required></label>
+        <label>Dag i måneden<input type="number" name="payDay" min="1" max="31" inputmode="numeric" value="${esc(it.payDay || 1)}" required></label>
+      </div>
+      <p class="next-pay" id="next-pay"></p>
       <label>Stopper (valgfri)<input type="month" name="endMonth" value="${esc(it.endMonth || '')}"></label>
-    </div>
-    <div class="grid2">
-      <label>Kategori${listSelect('category', 'categories', it.category)}</label>
+    </section>
+
+    <section class="fgroup">
+      <h3 class="fgroup-title">Konto og hvem</h3>
+      <div class="pair acc-pair">
+        <label><span data-lbl="account">${TYPE_TEXT[t].account}</span>${listSelect('account', 'accounts', it.account)}</label>
+        <label data-to-acc class="${t === 'transfer' ? '' : 'hidden'}"><span>Til konto</span>${listSelect('toAccount', 'accounts', it.toAccount)}</label>
+      </div>
+      <p class="muted small" data-transfer-info></p>
       <label><span data-lbl="who">${TYPE_TEXT[t].who}</span>${listSelect('who', 'people', it.who)}</label>
-    </div>
-    <div class="grid2">
-      <label><span data-lbl="supplier">${TYPE_TEXT[t].supplier}</span>${listSelect('supplier', 'suppliers', it.supplier)}</label>
-      <label>Betales med${listSelect('method', 'methods', it.method)}</label>
-    </div>
-    <div class="grid2 acc-row">
-      <label><span data-lbl="account">${TYPE_TEXT[t].account}</span>${listSelect('account', 'accounts', it.account)}</label>
-      <label data-to-acc class="${t === 'transfer' ? '' : 'hidden'}"><span>Til konto</span>${listSelect('toAccount', 'accounts', it.toAccount)}</label>
-    </div>
-    <p class="muted small" data-transfer-info></p>
-    ${splitEditor(it)}
-    <label>Kommentar / noter<textarea name="note" rows="2" maxlength="1000">${esc(it.note)}</textarea></label>
-    ${visibilityPicker(it)}
-    <label class="check"><input type="checkbox" name="active" ${it.active !== false ? 'checked' : ''}> Aktiv (fjern fluebenet hvis den er stoppet, men du vil gemme den)</label>
+      <label data-cat class="${t === 'transfer' ? 'hidden' : ''}">Kategori${listSelect('category', 'categories', it.category)}</label>
+      ${splitEditor(it)}
+    </section>
+
+    <details class="fgroup more" ${editing && (it.note || it.supplier) ? 'open' : ''}>
+      <summary>Mere (valgfrit): ${'leverandør, noter, hvem må se den'}</summary>
+      <label data-supplier class="${t === 'transfer' ? 'hidden' : ''}"><span data-lbl="supplier">${t === 'income' ? 'Afsender' : 'Leverandør'}</span>${listSelect('supplier', 'suppliers', it.supplier)}</label>
+      <label data-method class="${t === 'expense' ? '' : 'hidden'}">Betales med${listSelect('method', 'methods', it.method)}</label>
+      <label>Kommentar / noter<textarea name="note" rows="2" maxlength="1000">${esc(it.note)}</textarea></label>
+      ${visibilityPicker(it)}
+      <label class="check"><input type="checkbox" name="active" ${it.active !== false ? 'checked' : ''}> Aktiv (fjern fluebenet, hvis den er stoppet, men du vil gemme den)</label>
+    </details>
     ${hist.length ? `<details class="history"><summary>Historik (${hist.length} ændringer)</summary><ul>${hist.map((h) => `<li><span class="muted small">${fmtDate(new Date(h.at), true)} · ${esc(h.by)}</span><br>${changesText(h.changes)}</li>`).join('')}</ul></details>` : ''}
     ${editing ? `<p class="muted small">Oprettet ${it.createdByName ? `af ${esc(it.createdByName)} ` : ''}${fmtDate(it.createdAt)}</p>` : ''}`;
 
@@ -494,7 +555,7 @@ export function openItemModal(item = null, type = 'expense') {
   }
 
   openModal({
-    title: readOnly ? it.name : editing ? 'Ret post' : { income: 'Ny indtægt', expense: 'Ny udgift', transfer: 'Ny overførsel / opsparing' }[t],
+    title: readOnly ? it.name : editing ? 'Ret post' : { income: 'Ny indtægt', expense: 'Ny udgift', transfer: 'Ny overførsel' }[t],
     body, readOnly, buttons, wide: true,
     submitLabel: editing ? 'Gem ændringer' : 'Tilføj',
     onOpen: (form) => {
@@ -502,7 +563,6 @@ export function openItemModal(item = null, type = 'expense') {
       bindVisibility(form);
       const getMonthly = () => { const a = parseAmount(form.amount.value); return Number.isNaN(a) ? 0 : a / (Number(form.freq.value) || 1); };
       bindSplit(form, getMonthly);
-      // "Før: …" ved felter man ændrer
       if (editing) {
         for (const k of HINT_FIELDS) {
           const el = form.elements[k];
@@ -525,26 +585,47 @@ export function openItemModal(item = null, type = 'expense') {
         const type = form.querySelector('[name=type]:checked').value;
         const T = TYPE_TEXT[type];
         form.querySelector('[data-lbl=who]').textContent = T.who;
-        form.querySelector('[data-lbl=supplier]').textContent = T.supplier;
         form.querySelector('[data-lbl=account]').textContent = T.account;
+        form.querySelector('[data-lbl=supplier]').textContent = type === 'income' ? 'Afsender' : 'Leverandør';
+        form.querySelector('[data-type-help]').textContent = T.help;
         form.querySelector('[data-to-acc]').classList.toggle('hidden', type !== 'transfer');
-        form.querySelector('[data-type-help]').textContent = {
-          expense: 'En regning eller fast udgift, fx husleje eller forsikring.',
-          income: 'Penge der kommer ind, fx løn eller børnepenge.',
-          transfer: 'Penge der flyttes mellem jeres egne konti, fx fast opsparing eller overførsel til budgetkontoen.',
-        }[type];
+        form.querySelector('[data-cat]').classList.toggle('hidden', type === 'transfer');
+        form.querySelector('[data-supplier]').classList.toggle('hidden', type === 'transfer');
+        form.querySelector('[data-method]').classList.toggle('hidden', type !== 'expense');
+        form.querySelector('.acc-pair').classList.toggle('single', type !== 'transfer');
+        const sl = form.querySelector('[data-split-lbl]'); if (sl) sl.textContent = type === 'income' ? 'Hvem får hvor meget?' : type === 'transfer' ? 'Hvem overfører hvor meget?' : 'Hvem betaler hvor meget?';
+
+        // Næste betalinger
+        const np = form.querySelector('#next-pay');
+        const draft = { freq: f, startMonth: form.startMonth.value, payDay: Number(form.payDay.value) || 1, endMonth: form.endMonth.value || null, active: true };
+        const next = form.startMonth.value ? upcomingPayments(draft, new Date(), 3) : [];
+        np.innerHTML = next.length
+          ? `📅 Næste gang: <b>${shortDate(next[0])}</b>${next.length > 1 ? `, derefter ${next.slice(1).map(shortDate).join(' og ')}` : ''}${Number(form.payDay.value) > 28 ? '<br><span class="muted small">I korte måneder bruges den sidste dag i måneden.</span>' : ''}`
+          : (form.endMonth.value ? '⚠ Posten er stoppet — der kommer ikke flere betalinger.' : '');
+
+        // Overførsel: forklaring og passer/for meget/mangler for til-kontoen
         const info = form.querySelector('[data-transfer-info]');
         if (type === 'transfer') {
           const to = form.toAccount.value, from = form.account.value;
-          info.innerHTML = !to || !from ? '' : to === from ? '<span class="neg">Fra- og til-konto er den samme.</span>'
-            : savingsAccounts().includes(to) ? `🐷 Det her er <b>opsparing</b>: beløbet trækkes fra "Tilbage af lønnen" i det samlede budget. Det tæller kun med på ${esc(from)} og ${esc(to)} — ikke på jeres andre konti.`
-            : `↔ Pengene bliver i familien, så de tæller ikke med i det samlede budget. Du ser dem, når du vælger ${esc(from)} eller ${esc(to)} øverst.`;
+          if (!to || !from) info.innerHTML = '';
+          else if (to === from) info.innerHTML = '<span class="neg">Fra- og til-konto er den samme.</span>';
+          else if (savingsAccounts().includes(to)) info.innerHTML = `💵 Det her er <b>opsparing</b>. Det trækkes fra "Tilbage af lønnen".`;
+          else {
+            const others = state.items.filter((x) => x.id !== it.id);
+            const draftItem = { type: 'transfer', amount: Number.isNaN(a) ? 0 : a, freq: f, startMonth: form.startMonth.value || currentYm(), payDay: 1, account: from, toAccount: to, active: true };
+            const fund = accountFunding([...others, draftItem], { savingsAccounts: savingsAccounts() }).find((x) => x.account === to);
+            info.innerHTML = !fund || !fund.needs ? `↔ Pengene flyttes til ${esc(to)}. Der er ingen regninger på ${esc(to)} endnu.`
+              : fund.status === 'ok' ? `🟢 ${esc(to)} skal bruge ${kr(fund.needs, false)} om måneden — det passer.`
+              : fund.status === 'over' ? `🟡 ${esc(to)} skal kun bruge ${kr(fund.needs, false)} om måneden. Med denne overførsel kommer der ${kr(fund.diff, false)} for meget ind.`
+              : `🔴 ${esc(to)} skal bruge ${kr(fund.needs, false)} om måneden. Der mangler ${kr(-fund.diff, false)} om måneden.`;
+          }
         } else info.innerHTML = '';
+
         const p = form.querySelector('#calc-preview');
         if (Number.isNaN(a)) { p.innerHTML = ''; return; }
         p.innerHTML = f === 1
           ? `Det er <b>${kr(a)}</b> om måneden og <b>${kr(a * 12)}</b> om året`
-          : `${kr(a)} ${esc(freqLabel(f, lists().frequencies).toLowerCase())} svarer til <b>${kr(a / f)}</b> om måneden og <b>${kr((a * 12) / f)}</b> om året`;
+          : `Svarer til <b>${kr(a / f)}</b> om måneden og <b>${kr((a * 12) / f)}</b> om året`;
       };
       form.addEventListener('input', upd);
       form.addEventListener('change', upd);
@@ -558,18 +639,23 @@ export function openItemModal(item = null, type = 'expense') {
       const startMonth = fd.get('startMonth') || currentYm();
       const endMonth = fd.get('endMonth') || null;
       if (endMonth && ymToIndex(endMonth) < ymToIndex(startMonth)) { toast('Stop-måneden ligger før første betaling', 'error'); return false; }
-      if (fd.get('type') === 'transfer') {
+      const typ = fd.get('type');
+      if (typ === 'transfer') {
         if (!fd.get('account') || !fd.get('toAccount')) { toast('Vælg både fra- og til-konto', 'error'); return false; }
         if (fd.get('account') === fd.get('toAccount')) { toast('Fra- og til-konto skal være forskellige', 'error'); return false; }
       }
       let split;
       try { split = readSplit(form); } catch (e) { toast(e.message, 'error'); return false; }
       const data = {
-        type: fd.get('type'), name: String(fd.get('name')).trim(), amount: Math.round(amount * 100) / 100, freq,
+        type: typ, name: String(fd.get('name')).trim(), amount: Math.round(amount * 100) / 100, freq,
         startMonth, endMonth, payDay: Math.min(31, Math.max(1, parseInt(fd.get('payDay'), 10) || 1)),
-        category: fd.get('category') || '', who: fd.get('who') || '', supplier: fd.get('supplier') || '',
-        method: fd.get('method') || '', account: fd.get('account') || '', note: String(fd.get('note') || '').trim(),
-        toAccount: fd.get('type') === 'transfer' ? fd.get('toAccount') || '' : null,
+        // Overførsler får automatisk kategori ud fra til-kontoen
+        category: typ === 'transfer' ? (savingsAccounts().includes(fd.get('toAccount')) ? 'Opsparing' : 'Overførsler') : fd.get('category') || '',
+        who: fd.get('who') || '',
+        supplier: typ === 'transfer' ? '' : fd.get('supplier') || '',
+        method: typ === 'expense' ? fd.get('method') || '' : typ === 'transfer' ? 'Overførsel' : '',
+        account: fd.get('account') || '', toAccount: typ === 'transfer' ? fd.get('toAccount') || '' : null,
+        note: String(fd.get('note') || '').trim(),
         active: fd.get('active') === 'on', split, visibleTo: readVisibility(form),
       };
       await saveItem(editing ? it.id : null, data, it);

@@ -21,9 +21,20 @@ service cloud.firestore {
     function isAdmin(bid) { return signedIn() && roleIn(bid) == 'admin'; }
     function isOwner(bid) { return signedIn() && budgetDoc(bid).ownerUid == request.auth.uid; }
 
-    // ---------- Brugerprofil: kun dig selv ----------
+    // App-ejeren (Ejer-admin). Skift e-mailen her, hvis ejeren skifter.
+    function isAppOwner() { return verifiedEmail() && myEmail() == 'muhre93@gmail.com'; }
+
+    // ---------- Brugerprofil: kun dig selv (ejeren kan se listen over brugere) ----------
     match /users/{uid} {
       allow read, write: if signedIn() && request.auth.uid == uid;
+      allow read: if isAppOwner();
+    }
+
+    // ---------- App-indstillinger fra Ejer-admin ----------
+    // Alle må læse (login-siden viser teksterne), kun ejeren må skrive.
+    match /config/{id} {
+      allow read: if true;
+      allow write: if isAppOwner() && id == 'app';
     }
 
     // ---------- Budgetter ----------
@@ -126,6 +137,66 @@ service cloud.firestore {
         allow create: if canEdit(bid) && validVis(request.resource.data);
         allow update: if canEdit(bid) && canSee(resource.data) && validVis(request.resource.data);
         allow delete: if canEdit(bid) && canSee(resource.data);
+      }
+
+      // ----- Bank (Enable Banking) -----
+      // visibleTo: kontoens ejere (dem der har koblet den på) + evt. 'adults' = alle med rollen admin/redaktør.
+      // Ingen andre uid'er og aldrig 'all' — så børn og andre med "Kun læse" kan aldrig se bankdata.
+      function bankSee(d) { return request.auth.uid in d.visibleTo || ('adults' in d.visibleTo && roleIn(bid) in ['admin', 'edit']); }
+      function validBankVis(d) {
+        return d.owners is list && d.owners.size() > 0 && d.owners.size() <= 10
+          && d.visibleTo is list && d.visibleTo.size() <= 11
+          && d.visibleTo.toSet().hasAll(d.owners.toSet())
+          && d.visibleTo.toSet().difference(d.owners.toSet()).hasOnly(['adults']);
+      }
+      function bankChanged() { return request.resource.data.diff(resource.data).affectedKeys(); }
+      function onlyMine(field) { return request.resource.data[field].diff(resource.data.get(field, {})).affectedKeys().hasOnly([request.auth.uid]); }
+      // Bevis for at man selv har koblet kontoen på: Worker'en giver kun beviset til den, der logger ind i banken.
+      function joinProofOk(key) {
+        let j = getAfter(/databases/$(database)/documents/budgets/$(bid)/bankJoins/$(key + '_' + request.auth.uid));
+        return j != null && hashing.sha256(j.data.proof.toUtf8()).toHexString().lower() == resource.data.get('joinHash', '');
+      }
+      match /bankAccounts/{key} {
+        // resource == null: så kan appen se, om kontoen allerede findes (fx koblet på af din partner)
+        allow read: if canEdit(bid) && (resource == null || bankSee(resource.data));
+        allow create: if canEdit(bid) && key.matches('^[0-9a-f]{24}$')
+          && request.resource.data.owners == [request.auth.uid]
+          && request.resource.data.joinHash is string && request.resource.data.joinHash.size() == 64
+          && validBankVis(request.resource.data);
+        allow update: if canEdit(bid) && (
+          // En ejer må rette alt (men kun fjerne sig selv som ejer, og aldrig beviset)
+          (request.auth.uid in resource.data.owners && validBankVis(request.resource.data)
+            && request.resource.data.get('joinHash', '') == resource.data.get('joinHash', '')
+            && (request.resource.data.owners.toSet() == resource.data.owners.toSet()
+                || request.resource.data.owners.toSet() == resource.data.owners.toSet().difference([request.auth.uid].toSet())))
+          // Din partner kobler den samme konto på → bliver medejer (kun med bevis, kun sig selv, samme synlighed + sig selv)
+          || (!(request.auth.uid in resource.data.owners)
+            && joinProofOk(key)
+            && bankChanged().hasOnly(['owners', 'ownerNames', 'linked', 'visibleTo'])
+            && request.resource.data.owners.toSet() == resource.data.owners.toSet().union([request.auth.uid].toSet())
+            && request.resource.data.visibleTo.toSet() == resource.data.visibleTo.toSet().union([request.auth.uid].toSet())
+            && onlyMine('ownerNames') && onlyMine('linked')
+            && validBankVis(request.resource.data))
+          // Andre voksne der kan se kontoen, må vælge hvilken budgetkonto den hører til
+          || (bankSee(resource.data) && bankChanged().hasOnly(['budgetAccount']))
+        );
+        allow delete: if canEdit(bid) && resource.data.owners == [request.auth.uid];
+      }
+      // Beviset kan kun skrives (af en selv) — aldrig læses af nogen
+      match /bankJoins/{id} {
+        allow read: if false;
+        allow create, update: if canEdit(bid) && id == request.resource.data.key + '_' + request.auth.uid
+          && request.resource.data.proof is string && request.resource.data.proof.size() == 64;
+        allow delete: if false;
+      }
+      function bankAcct(acct) { return /databases/$(database)/documents/budgets/$(bid)/bankAccounts/$(acct); }
+      match /bankTx/{id} {
+        allow read: if canEdit(bid) && (resource == null || bankSee(resource.data));
+        // Kun kontoens ejere skriver posteringer, og synligheden skal altid være den samme som kontoens
+        allow create, update: if canEdit(bid) && request.auth.uid in get(bankAcct(request.resource.data.acct)).data.owners
+          && id == request.resource.data.acct + '_' + request.resource.data.ym
+          && request.resource.data.visibleTo == getAfter(bankAcct(request.resource.data.acct)).data.visibleTo;
+        allow delete: if canEdit(bid) && request.auth.uid in get(bankAcct(resource.data.acct)).data.owners;
       }
 
       // ----- Versioner til sammenligning -----

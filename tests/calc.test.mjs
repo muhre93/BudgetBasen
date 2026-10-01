@@ -253,4 +253,49 @@ t('person-overblik: opsparing pr. person og fælles', () => {
   close(s.joint.need, 9000, 'fælles 8000 + opsparing 1000'); close(A.saving, 2000, 'A opsparing');
   close(A.left, 30000 - 4500 - 2000, 'A tilbage'); close(B.left, 20000 - 4500, 'B tilbage');
 });
+
+// ---------- Lasses eksempel: overfører mere end regningerne koster ----------
+import { accountFunding, spendable } from '../js/calc.js';
+const MIKE = [
+  { type: 'income', name: 'Løn Mike', amount: 29400, freq: 1, payDay: 30, who: 'Mike', account: 'Lønkonto' },
+  { type: 'transfer', name: 'Mike til Budget', amount: 23000, freq: 1, payDay: 30, who: 'Mike', account: 'Lønkonto', toAccount: 'Budgetkonto' },
+  { type: 'expense', name: 'Realkredit', amount: 21963, freq: 3, startMonth: '2026-09', payDay: 15, who: 'Mike', account: 'Budgetkonto' },
+];
+t('Tilbage af lønnen = det der er tilbage på lønkontoen (29.400 − 23.000)', () => {
+  const s = summarize(MIKE, D(2026, 9, 30), { savingsAccounts: [] });
+  close(s.net, 22079, 'reelt overskud'); close(s.excess, 15679, 'parkeret på budgetkonto'); close(s.left, 6400, 'til forbrug');
+  const lk = summarize(MIKE, D(2026, 9, 30), { account: 'Lønkonto' });
+  close(lk.net, s.left, 'samme tal som når man ser på lønkontoen');
+});
+t('budgetkonto: overfører 15.679 for meget', () => {
+  const [f] = accountFunding(MIKE, { today: D(2026, 9, 30) });
+  assert.equal(f.account, 'Budgetkonto'); close(f.needs, 7321, 'behov'); close(f.diff, 15679, 'for meget'); assert.equal(f.status, 'over');
+  const [g] = accountFunding([...MIKE.slice(0, 1), { ...MIKE[1], amount: 6000 }, MIKE[2]], { today: D(2026, 9, 30) });
+  assert.equal(g.status, 'under'); close(g.diff, -1321, 'mangler');
+  const [h] = accountFunding([...MIKE.slice(0, 1), { ...MIKE[1], amount: 7400 }, MIKE[2]], { today: D(2026, 9, 30) });
+  assert.equal(h.status, 'ok', 'inden for 200 kr. = passer');
+});
+t('person-kort: Mikes "tilbage til sig selv" trækker det parkerede fra', () => {
+  const ps = personSummary(MIKE, { jointAccounts: [], people: ['Mike', 'Maria'], today: D(2026, 9, 30) });
+  const m = ps.persons.find((p) => p.name === 'Mike');
+  close(m.parked, 15679, 'parkeret'); close(m.left, 6400, 'tilbage');
+});
+t('du kan bruge: med 0 kr. i dag og 23.000 ind hver md. mangler der ikke noget', () => {
+  const r = spendable(MIKE, 'Budgetkonto', 0, D(2026, 9, 30));
+  assert.equal(r.missing, 0); assert.equal(r.canSpend, 0, 'saldoen er 0 i dag → kan bruge 0');
+  assert.equal(r.nextBig.name, 'Realkredit'); assert.equal(r.nextBig.amount, 21963);
+  assert.equal(r.nextBig.date.getMonth(), 11, 'december'); assert.equal(r.nextBig.date.getDate(), 15);
+});
+t('du kan bruge: 26.000 på kontoen', () => {
+  const r = spendable(MIKE, 'Budgetkonto', 26000, D(2026, 9, 30));
+  assert.equal(r.canSpend, 26000, 'overførslerne dækker alt → hele saldoen er fri');
+  const tight = [{ type: 'expense', name: 'Stor regning', amount: 30000, freq: 12, startMonth: '2026-11', payDay: 1, account: 'B' },
+                 { type: 'transfer', name: 'Ind', amount: 2000, freq: 1, payDay: 1, account: 'L', toAccount: 'B' }];
+  const r2 = spendable(tight, 'B', 20000, D(2026, 9, 30));
+  assert.equal(r2.missing, 6000, '20.000 + 2×2.000 − 30.000 = −6.000 den 1. nov.');
+  assert.equal(r2.missingDate.getMonth(), 10);
+  const r3 = spendable(tight, 'B', 30000, D(2026, 9, 30));
+  assert.equal(r3.canSpend, 4000, 'laveste punkt 4.000 = det man kan bruge');
+  assert.equal(spendable(tight, 'B', 30000, D(2026, 9, 30), { buffer: 1000 }).canSpend, 3000, 'med buffer');
+});
 console.log(`${passed} tests bestået i alt.`);

@@ -11,3 +11,5 @@ id = "INDSÆT_KV_NAMESPACE_ID"   # Storage & Databases → KV → kopiér ID
 [vars]
 FIREBASE_PROJECT_ID = "budgetbasen"
 ALLOWED_ORIGINS = "https://muhre93.github.io,https://kronborg1980.github.io"
+OWNER_EMAIL = "muhre93@gmail.com"
+# BANK_SECRET sættes som *Secret* i dashboardet (Settings → Variables and Secrets), aldrig her.

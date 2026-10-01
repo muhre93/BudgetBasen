@@ -42,6 +42,8 @@ budgetbasen/
 
 ## Opsætning trin for trin (ca. 20 min.)
 
+> Tests: `node tests/calc.test.mjs`, `node tests/worker.test.mjs`, `node tests/bank.test.mjs`, `node tests/bankmatch.test.mjs`.
+
 ### 1. Opret Firebase-projekt
 1. Gå til <https://console.firebase.google.com> → **Tilføj projekt** → giv det et navn (f.eks. `budgetbasen`). Google Analytics er ikke nødvendigt.
 2. **Build → Authentication → Kom i gang → Sign-in method → Google → Aktivér** (vælg din e-mail som support-mail) → Gem.
@@ -131,6 +133,30 @@ Uden disse virker appen stadig — så står der "Egen mail" ved invitationen, s
 - **Overskud pr. md.** = alle aktive indtægter − udgifter (normaliseret pr. måned). **Årets resultat** vises både normaliseret (×12) og som *faktiske* betalinger i kalenderåret.
 - **Likviditet** simulerer saldoen betaling for betaling — ikke bare månedstotaler — så man ser hvis kontoen går i minus den 1., selvom lønnen kommer den 25. Beregnes i hele øre (ingen afrundingsfejl). Samme dag: indtægter før udgifter (som bankerne gør med faste overførsler og Betalingsservice). Betalinger med betalingsdag i dag eller tidligere i indeværende måned regnes som allerede trukket.
 - **Budgetkonto "Bør stå":** for hver udgift på kontoen: beløb × (frekvens − måneder til næste betaling) ÷ frekvens. Forudsætter at den månedlige overførsel lander den 1. Eksempel: årlig forsikring på 1.200 kr. betalt i marts → i september bør der stå 600 kr. Appen viser overskud/manko og den anbefalede månedlige overførsel.
+
+## Nyt i version 6
+- **🏦 Bank-fane (Enable Banking).** Saldo og posteringer hentes direkte fra banken. Kun læseadgang — appen kan aldrig flytte penge. Slås til pr. budget under Admin → Budgetter.
+  - Hver bruger opretter sin **egen gratis** Enable Banking-app og indsætter App-ID + nøglefil (.pem) i appen (guide i appen). Nøglen gemmes **krypteret** i Workers KV med `BANK_SECRET` og sendes aldrig tilbage til telefonen.
+  - **Plan og virkelighed:** budgetposter sammenlignes med posteringerne (✅ ⚠️ ❌ 🕒). Faste betalinger, der ikke står i budgettet, foreslås.
+  - **Fælleskonti genkendes:** Worker'en laver en hemmelig fingeraftryks-kode (HMAC) af kontonummeret, så den samme konto får samme nøgle hos begge. Den anden bliver medejer.
+  - Interne overførsler mellem jeres egne konti genkendes og tæller ikke som udgifter.
+  - Banksaldoen bruges automatisk i "Du kan bruge …" og Likviditet.
+  - Synlighed pr. konto: *Kun ejerne* eller *Alle voksne i budgettet*. Roller med "Kun læse" kan aldrig se bankdata (Firestore-regler).
+- **👑 Ejer-admin** (kun muhre93@gmail.com): funktioner til/fra for alle, tekster og hjælpetekster, budgetsidens rækkefølge, besked til alle, brugeroversigt med bankstatus. Ligger i `config/app`.
+- **Worker:** nye endpoints under `/bank/*`. Firebase-login tjekkes her med Googles offentlige nøgler (RS256). Ny secret `BANK_SECRET` (mindst 32 tegn — skift den aldrig) og valgfri variabel `OWNER_EMAIL`.
+- **Nye filer:** `js/config.js`, `js/bank.js`, `js/bankmatch.js`, `js/views/bank.js`, `js/views/owner.js`, `tests/bank.test.mjs`, `tests/bankmatch.test.mjs`.
+- **Husk:** upload nye Firestore-regler og ny Worker-kode.
+
+## Nyt i version 5
+- **"Tilbage af lønnen"** trækker nu også det, der overføres *for meget* til fx Budgetkontoen, fra. Det, der er tilbage, er det, man faktisk kan bruge. Det ekstra vises i en linje for sig.
+- **En statuslinje for hver konto, der modtager overførsler:** 🟢 passer / 🟡 X kr. for meget / 🔴 mangler X kr.
+- **Kontosaldo:** "Du kan bruge X kr." (uden at mangle til regningerne det næste år), "Der mangler X den D" og næste store regning.
+- **Formularen** er delt i grupper (Hvad og hvor meget / Hvornår / Konto og hvem / Mere) og viser "📅 Næste gang: …". Felter, der ikke giver mening, er fjernet. Kategorien for overførsler sættes automatisk.
+- **Udseende:** 3 lyse og 2 mørke temaer (Admin → Udseende) og en dag/nat-knap øverst. Valget gemmes pr. person.
+- **Simpel visning** pr. person: tre store tal, en enkel liste og "Tilføj", der stiller ét spørgsmål ad gangen.
+- **"Fælles" kan slås fra** under Hvem betaler hvad (hvis man er alene eller ikke har en fælleskonto).
+- Opsparingskonti vises med 💵. ?-knapper står aldrig alene på en linje. Gennemtjekket på telefoner fra 360 px.
+- Upload alle filer igen. Der er ingen ændringer i Firestore-regler eller Worker.
 
 ## Nyt i version 4
 - **Indtægt / Udgift / Overførsel.** Overførsler flytter penge mellem jeres egne konti (fx fast opsparing eller Lønkonto → Budgetkonto).

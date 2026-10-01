@@ -14,12 +14,16 @@ import { noticeDeadline } from './documents.js';
 import { deleteShare, shareUrl } from './share.js';
 import { openCompareDialog } from './compare.js';
 import { showWelcome } from '../help.js';
+import { THEMES, getPrefs, setPrefs } from '../prefs.js';
+import { feature } from '../config.js';
 
 const ui = { tab: 'budgets', log: null, logFilter: '', snaps: null };
 export function setSelectBudget(fn) { ui.selectBudget = fn; }
+export function openTab(id) { ui.tab = id; }
 
 const TABS = [
   { id: 'budgets', label: 'Budgetter' },
+  { id: 'look', label: 'Udseende' },
   { id: 'members', label: 'Medlemmer', admin: true },
   { id: 'lists', label: 'Lister', admin: true },
   { id: 'shares', label: 'Delte links', admin: true },
@@ -37,7 +41,7 @@ export function render(root) {
     <div id="admin-body"></div>`;
   root.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { ui.tab = b.dataset.tab; render(root); }));
   const body = root.querySelector('#admin-body');
-  ({ budgets, members, lists: listsTab, shares, versions, log, data })[ui.tab](body, root);
+  ({ budgets, look, members, lists: listsTab, shares, versions, log, data })[ui.tab](body, root);
 }
 
 // ---------- Budgetter ----------
@@ -63,6 +67,8 @@ function budgets(el, root) {
         <button class="btn ghost" id="ad-dup">Kopiér til nyt budget</button>
         ${isOwner() ? '<button class="btn danger-ghost" id="ad-del">Slet budget permanent</button>' : '<button class="btn danger-ghost" id="ad-leave">Forlad budget</button>'}
       </div>
+      ${isAdmin() && feature('bank') ? `<label class="check big-check bank-toggle"><input type="checkbox" id="ad-bank" ${state.budget.settings?.bank ? 'checked' : ''}>
+        <span>🏦 <b>Vis Bank-fanen i dette budget</b><br><span class="muted small">Så kan medlemmer koble deres bank på og se saldo og posteringer. Hver person vælger selv, hvilke konti der kommer med, og hvem der må se dem. Børn ("Kun læse") ser aldrig bankdata.</span></span></label>` : ''}
     </section>`;
   el.querySelector('#ad-new').onclick = async () => {
     const name = await promptDialog('Nyt budget', { label: 'Navn', placeholder: 'f.eks. Sommerhus, Budget 2027' });
@@ -74,6 +80,11 @@ function budgets(el, root) {
     try { const id = await createDemoBudget(); ui.selectBudget?.(id); } catch (err) { errorToast(err); } finally { e.target.disabled = false; }
   };
   el.querySelector('#ad-guide').onclick = () => showWelcome();
+  el.querySelector('#ad-bank')?.addEventListener('change', (e) => {
+    updateBudget({ 'settings.bank': e.target.checked }, e.target.checked ? 'Bank-fanen slået til' : 'Bank-fanen slået fra')
+      .then(() => toast(e.target.checked ? 'Bank-fanen er slået til — du finder den i menuen' : 'Bank-fanen er slået fra'))
+      .catch(errorToast);
+  });
   el.querySelector('#ad-private').onclick = async () => {
     const name = await promptDialog('Nyt privat budget', { label: 'Navn', value: 'Min opsparing' });
     if (!name) return;
@@ -97,6 +108,40 @@ function budgets(el, root) {
     if (!(await confirmDialog(`Forlad <b>${esc(state.budget.name)}</b>? Du skal inviteres igen for at få adgang.`))) return;
     leaveBudget().catch(errorToast);
   });
+}
+
+// ---------- Udseende ----------
+function look(el, root) {
+  const p = getPrefs();
+  const card = (t, slot) => `<button type="button" class="theme-card ${p[slot] === t.id ? 'on' : ''}" data-theme-pick="${t.id}" data-slot="${slot}">
+      <span class="theme-swatch" style="background:${t.sw[0]}"><i style="background:${t.sw[1]};left:-10%;top:-20%"></i><i style="background:${t.sw[2]};right:-10%;top:0"></i><b style="background:${t.dark ? 'rgba(255,255,255,.1)' : 'rgba(255,255,255,.85)'};border:1px solid ${t.dark ? 'rgba(255,255,255,.15)' : 'rgba(0,0,0,.08)'}"></b></span>
+      <span class="theme-name"><span>${t.name}</span>${p[slot] === t.id ? '<span>✓</span>' : ''}</span>
+    </button>`;
+  el.innerHTML = `
+    <section class="glass card">
+      <h2>☀️ Dag-tema</h2>
+      <p class="muted small">Bruges om dagen, og når du trykker på solen øverst.</p>
+      <div class="theme-grid">${THEMES.filter((t) => !t.dark).map((t) => card(t, 'day')).join('')}</div>
+    </section>
+    <section class="glass card">
+      <h2>🌙 Nat-tema</h2>
+      <p class="muted small">Bruges når du trykker på månen øverst.</p>
+      <div class="theme-grid">${THEMES.filter((t) => t.dark).map((t) => card(t, 'night')).join('')}</div>
+    </section>
+    <section class="glass card simple-choice">
+      <h2>Visning</h2>
+      <div class="checks">
+        <label class="check big-check"><input type="radio" name="viewMode" value="simple" ${p.simple ? 'checked' : ''}> ✨ Simpel — kun det vigtigste, ét spørgsmål ad gangen når man tilføjer</label>
+        <label class="check big-check"><input type="radio" name="viewMode" value="full" ${p.simple ? '' : 'checked'}> 🧩 Udvidet — alle tal, filtre og indstillinger</label>
+      </div>
+      <p class="muted small">Indstillingerne gælder kun for dig og følger med til dine andre enheder. De andre i budgettet vælger selv.</p>
+    </section>`;
+  el.querySelectorAll('[data-theme-pick]').forEach((b) => (b.onclick = async () => {
+    const slot = b.dataset.slot;
+    await setPrefs({ [slot]: b.dataset.themePick, mode: slot === 'night' ? 'night' : 'day' });
+    render(root);
+  }));
+  el.querySelectorAll('[name=viewMode]').forEach((r) => (r.onchange = () => setPrefs({ simple: r.value === 'simple' })));
 }
 
 // ---------- Medlemmer ----------
@@ -216,7 +261,7 @@ function listsTab(el) {
       <div class="checks">${L.accounts.map((a) => `<label class="check"><input type="checkbox" name="jointAcc" value="${esc(a)}" ${jointAccounts().includes(a) ? 'checked' : ''}> ${esc(a)}</label>`).join('')}</div>
     </section>
     <section class="glass card list-card">
-      <h3>Opsparingskonti 🐷</h3>
+      <h3>Opsparingskonti 💵</h3>
       <p class="muted small">Overførsler til disse konti tæller som opsparing: de trækkes fra "Tilbage af lønnen" i det samlede budget, men ikke fra fx budgetkontoen.</p>
       <div class="checks">${L.accounts.map((a) => `<label class="check"><input type="checkbox" name="savAcc" value="${esc(a)}" ${savingsAccounts().includes(a) ? 'checked' : ''}> ${esc(a)}</label>`).join('')}</div>
     </section>
