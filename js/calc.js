@@ -227,14 +227,15 @@ export function summarize(items, today = new Date(), opts = {}) {
     res.byCategory[cKey] = (res.byCategory[cKey] || 0) + m;
   }
   res.net = res.income - res.expense - res.saving;
-  // "Tilbage af lønnen" = det der faktisk er tilbage, når alt det, der trækkes eller overføres fra
-  // lønnen, er gået ud. Overføres der MERE til fx budgetkontoen end regningerne koster, er pengene
-  // stadig væk fra lønnen (−excess). Overføres der MINDRE, er de ikke taget fra lønnen endnu (+shortage) —
-  // og kontoen, der mangler penge, vises for sig.
+  // left     = "Reelt til forbrug": det der er tilbage, når alle regninger og opsparing er dækket,
+  //            og når det, der overføres FOR MEGET til fx budgetkontoen, er trukket fra (det står dér).
+  // onSalary = det der faktisk står tilbage på lønkontoen. Overføres der for LIDT til en konto,
+  //            er onSalary større end left — forskellen (shortage) mangler på den konto.
   res.funding = opts.account ? [] : accountFunding(items, { savingsAccounts: opts.savingsAccounts || [], today });
   res.excess = res.funding.reduce((a, f) => a + f.excess, 0);
   res.shortage = res.funding.reduce((a, f) => a + Math.max(0, -f.diff), 0);
-  res.left = res.net - res.excess + res.shortage;
+  res.left = res.net - res.excess;
+  res.onSalary = res.left + res.shortage;
   res.yearLeft = res.left * 12;
   res.yearIncome = res.income * 12;
   res.yearExpense = res.expense * 12;
@@ -492,7 +493,8 @@ export function personSummary(items, { jointAccounts = [], jointSplit = null, pe
     p.jointContribution = total > 0 ? (jointNeed * Number(split[n] || 0)) / total : 0;
     p.totalOut = p.ownExpense + p.jointContribution;
     p.parked = parked[n] || 0;
-    p.left = p.income - p.totalOut - p.saving - p.parked;
+    p.left = p.income - p.totalOut - p.saving - Math.max(0, p.parked); // reelt til forbrug
+    p.onSalary = p.left + Math.max(0, -p.parked);
   }
   return { persons: Object.values(persons), joint: { ...joint, need: jointNeed }, split };
 }

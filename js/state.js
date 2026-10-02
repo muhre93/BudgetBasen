@@ -95,6 +95,16 @@ export function savingsAccounts() {
   const s = state.budget?.settings?.savingsAccounts;
   return Array.isArray(s) ? s : ['Opsparingskonto'];
 }
+/** Hovedkontoen: den konto budgettet handler om (typisk Budgetkonto). Budget-siden åbner på den. */
+export function mainAccount() {
+  const m = state.budget?.settings?.mainAccount;
+  if (typeof m === 'string') return m;
+  return lists().accounts.includes('Budgetkonto') ? 'Budgetkonto' : '';
+}
+/** 'percent' = fælles deles i procent · 'own' = hver betaler sine egne poster ("Hvem betaler" bestemmer altid). */
+export const shareMode = () => (state.budget?.settings?.shareMode === 'own' ? 'own' : 'percent');
+/** Fælleskonti der deles i procent (tom, når hver betaler sine egne poster). */
+export const effJoint = () => (shareMode() === 'own' ? [] : jointAccounts());
 export const TYPE_LABEL = { income: 'Indtægt', expense: 'Udgift', transfer: 'Overførsel' };
 export const TYPE_PLURAL = { income: 'Indtægter', expense: 'Udgifter', transfer: 'Opsparing og overførsler' };
 

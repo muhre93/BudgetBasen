@@ -4,7 +4,8 @@
 import { isSimple, getPrefs, setPrefs } from '../prefs.js';
 import { getConfig, SECTIONS, feature } from '../config.js';
 import { renderSimple } from './simple.js';
-import { state, canEdit, lists, jointAccounts, savingsAccounts, isShared, visibilityLabel, defaultVisibleTo, TYPE_PLURAL, TYPE_LABEL } from '../state.js';
+import { openImport } from '../import.js';
+import { state, canEdit, lists, jointAccounts, savingsAccounts, isShared, visibilityLabel, defaultVisibleTo, TYPE_PLURAL, TYPE_LABEL, mainAccount, shareMode, effJoint } from '../state.js';
 import {
   esc, kr, krSigned, fmtYm, fmtDate, openModal, confirmDialog, toast, parseAmount, numToInput,
   currentYm, isoDate, lsGet, lsSet,
@@ -26,7 +27,7 @@ const EMPTY_F = { type: 'all', status: 'active', person: '', cat: '', acc: '', f
 const bfold = lsGet('bb:budgetFold', {});
 const bOpen = (id, def = true) => (id in bfold ? bfold[id] : def);
 const bsec = (id, title, inner, def = true) => `<details class="fold bfold" data-bfold="${id}" ${bOpen(id, def) ? 'open' : ''}><summary><span class="fold-title">${title}</span><span class="fold-sum muted small" data-bsum="${id}"></span></summary><div class="fold-body">${inner}</div></details>`;
-const ui = { q: '', f: { ...EMPTY_F }, filtersOpen: false, view: lsGet('bb:bView', ''), collapsed: new Set(lsGet('bb:collapsed', [])) };
+const ui = { q: '', f: { ...EMPTY_F }, filtersOpen: false, view: lsGet('bb:bView', null), person: '', collapsed: new Set(lsGet('bb:collapsed', [])) };
 const viewOpts = () => ({ account: ui.view || null, savingsAccounts: savingsAccounts() });
 
 const ICON = {
@@ -123,14 +124,15 @@ function buildShell(root, L, key) {
     if (act === 'joint') openJointModal();
     const it = e.target.closest('[data-item]');
     if (it) { const x = state.items.find((i) => i.id === it.dataset.item); if (x) openItemModal(x); }
-    const person = e.target.closest('[data-person-card]');
-    if (person) {
-      ui.f.person = person.dataset.personCard;
+    const pk = e.target.closest('[data-person-pick], [data-person-card]');
+    if (pk) {
+      const name = pk.dataset.personPick ?? pk.dataset.personCard;
+      ui.person = ui.person === name && pk.dataset.personCard ? '' : name;
+      ui.f.person = ui.person;
       root.querySelector('[data-f=person]').value = ui.f.person;
-      ui.filtersOpen = true; root.querySelector('#b-fpanel').classList.remove('hidden');
       update(root);
-      root.querySelector('#b-results').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
+
   });
   w.addEventListener('toggle', (e) => {
     const d = e.target;
@@ -166,6 +168,7 @@ function update(root) {
   const today = new Date();
   const L = lists();
   const accs = viewAccounts(L);
+  if (ui.view === null) ui.view = mainAccount(); // første gang: åbn på hovedkontoen
   if (ui.view && !accs.includes(ui.view)) ui.view = '';
   const opts = viewOpts();
   const allItems = state.items;
@@ -180,7 +183,7 @@ function update(root) {
     <span class="av-label">Vis ${helpBtn('accountView')}</span>
     <div class="av-chips">
       <button type="button" class="av-chip ${!ui.view ? 'on' : ''}" data-view-acc="">🏠 Hele budgettet</button>
-      ${accs.map((a) => `<button type="button" class="av-chip ${ui.view === a ? 'on' : ''}" data-view-acc="${esc(a)}">${accIcon(a)} ${esc(a)}</button>`).join('')}
+      ${[...accs].sort((a, b) => Number(b === mainAccount()) - Number(a === mainAccount())).map((a) => `<button type="button" class="av-chip ${ui.view === a ? 'on' : ''} ${a === mainAccount() ? 'main' : ''}" data-view-acc="${esc(a)}" ${a === mainAccount() ? 'title="Hovedkonto"' : ''}>${a === mainAccount() ? '⭐' : accIcon(a)} ${esc(a)}</button>`).join('')}
     </div>` : '';
 
   if (!ui.view) {
@@ -188,7 +191,7 @@ function update(root) {
       ${kpi('Indtægter hver måned', kr(sum.income), 'pos', 'in', `${kr(sum.yearIncome, false)} om året`)}
       ${kpi('Udgifter hver måned', kr(sum.expense), 'neg', 'out', `${kr(sum.yearExpense, false)} om året`)}
       ${kpi('Opsparing hver måned', kr(sum.saving), 'save', 'saving', `${kr(sum.yearSaving, false)} om året`)}
-      ${kpi('Tilbage af lønnen', kr(sum.left), sum.left >= 0 ? 'pos' : 'neg', 'left', sum.shortage > 0.5 ? `Til forbrug · 🔴 ${sum.funding.filter((f) => f.diff < -0.5).map((f) => f.account).join(' og ')} mangler ${kr(sum.shortage, false)}/md.` : sum.excess > 0.5 ? `Til forbrug · ${kr(sum.excess, false)} ekstra står på ${sum.funding.filter((f) => f.excess > 0.5).map((f) => f.account).join(' og ')}` : `${sum.left >= 0 ? '🟢 Der er penge tilovers' : '🔴 Der går flere penge ud end ind'} · ${kr(sum.yearLeft, false)} om året`)}`;
+      ${kpi('Reelt til forbrug', kr(sum.left), sum.left >= 0 ? 'pos' : 'neg', 'left', sum.shortage > 0.5 ? `På lønkontoen står ${kr(sum.onSalary, false)}, fordi ${sum.funding.filter((f) => f.diff < -0.5).map((f) => esc(f.account)).join(' og ')} mangler ${kr(sum.shortage, false)}/md.` : sum.excess > 0.5 ? `${kr(sum.excess, false)} ekstra står på ${sum.funding.filter((f) => f.excess > 0.5).map((f) => esc(f.account)).join(' og ')}` : `${sum.left >= 0 ? '🟢 Når alle regninger er betalt' : '🔴 Der går flere penge ud end ind'} · ${kr(sum.yearLeft, false)} om året`)}`;
   } else if (isSav) {
     const now = Number(bal?.amount) || 0;
     q('#b-kpis').innerHTML = `
@@ -205,12 +208,12 @@ function update(root) {
   }
   const funding = accountFunding(allItems, { savingsAccounts: savingsAccounts(), today }).filter((f) => !ui.view || f.account === ui.view);
   q('#b-funding').innerHTML = funding.map(fundingLine).join('');
-  q('#b-persons').innerHTML = ui.view ? '' : personsHtml(allItems, L);
+  q('#b-persons').innerHTML = personsHtml(allItems, L); // vises altid — også når man ser én konto
   q('#b-balances').innerHTML = balancesHtml(allItems, today, ui.view);
   // Overskrifterne viser det vigtigste, når kassen er foldet sammen — og tomme kasser skjules
   const bsum = (id, txt) => { const d = root.querySelector(`[data-bfold="${id}"]`); d.querySelector('[data-bsum]').innerHTML = txt; };
   const bhide = (id, empty) => root.querySelector(`[data-bfold="${id}"]`).classList.toggle('hidden', empty);
-  bsum('kpis', ui.view ? `Tilbage på ${esc(ui.view)}: <b>${kr(sum.net, false)}</b>` : `Tilbage af lønnen: <b>${kr(sum.left, false)}</b>`);
+  bsum('kpis', ui.view ? `Tilbage på ${esc(ui.view)}: <b>${kr(sum.net, false)}</b>` : `Reelt til forbrug: <b>${kr(sum.left, false)}</b>`);
   bhide('funding', !funding.length);
   bsum('funding', funding.map((f) => (f.status === 'ok' ? `🟢 ${esc(f.account)} passer` : f.status === 'over' ? `🟡 ${esc(f.account)}: ${kr(f.diff, false)} for meget` : `🔴 ${esc(f.account)} mangler ${kr(-f.diff, false)}`)).join(' · '));
   bhide('persons', !q('#b-persons').innerHTML.trim());
@@ -261,22 +264,56 @@ function personsHtml(items, L) {
   const people = L.people.filter((p) => p !== 'Fælles');
   if (!items.length || !people.length) return '';
   const js = state.budget.settings?.jointSplit;
-  const showJoint = state.budget.settings?.showJoint !== false;
+  const own = shareMode() === 'own';
+  const showJoint = !own && state.budget.settings?.showJoint !== false;
   const s = personSummary(items, { jointAccounts: showJoint ? jointAccounts() : [], jointSplit: js, people, savingsAccounts: savingsAccounts() });
-  const cards = s.persons.map((p) => `
-    <button class="person-card glass" data-person-card="${esc(p.name)}" title="Vis ${esc(p.name)}s poster">
+  const main = mainAccount();
+  const now = dateToIndex(new Date());
+  // "Hver betaler sine egne": hvor meget af hver persons regninger ligger på hovedkontoen (= det personen skal overføre dertil)
+  const onMain = {}, toMain = {};
+  let noOwner = 0;
+  if (own) {
+    for (const it of items) {
+      if (!countsInBudget(it, now)) continue;
+      if (isTransfer(it) && main && it.toAccount === main) { for (const [n, a] of Object.entries(shareOf(it, []).parts)) toMain[n] = (toMain[n] || 0) + a; continue; }
+      if (it.type !== 'expense') continue;
+      const parts = shareOf(it, []).parts;
+      if (parts['Fælles']) noOwner++;
+      if (main && it.account === main) for (const [n, a] of Object.entries(parts)) onMain[n] = (onMain[n] || 0) + a;
+    }
+  }
+  if (ui.person && !s.persons.some((p) => p.name === ui.person)) ui.person = '';
+  const card = (p) => `
+    <button class="person-card glass ${ui.person === p.name ? 'sel' : ''}" data-person-card="${esc(p.name)}" title="Vis ${esc(p.name)}s poster">
       <div class="pc-name">${esc(p.name)}</div>
-      <div class="pc-total"><span>Skal af med</span><b>${kr(p.totalOut, false)}</b><small>/md.</small></div>
+      <div class="pc-total"><span>${own ? 'Betaler' : 'Skal af med'}</span><b>${kr(p.totalOut, false)}</b><small>/md.</small></div>
       <div class="pc-lines">
-        <div><span>Egne regninger</span><span>${kr(p.ownExpense, false)}</span></div>
-        ${showJoint || p.jointContribution > 0.5 ? `<div><span>${showJoint ? "Til fælles" : "Delte regninger"} (${Math.round((p.jointContribution / (s.joint.need || 1)) * 100) || 0} %)</span><span>${kr(p.jointContribution, false)}</span></div>` : ''}
+        ${own ? (main && (onMain[p.name] > 0.5 || toMain[p.name] > 0.5) ? (() => {
+          const need = onMain[p.name] || 0, has = toMain[p.name] || 0, d = has - need;
+          return `<div><span>Heraf på ${esc(main)}</span><span>${kr(need, false)}</span></div>
+            <div><span>Overfører nu til ${esc(main)}</span><span>${kr(has, false)}</span></div>
+            ${Math.abs(d) <= 200 ? '<div class="pos"><span>🟢 Overførslen passer</span><span></span></div>' : d < 0 ? `<div class="warn-line neg"><span>🔴 Mangler at overføre</span><span>${kr(-d, false)}</span></div>` : `<div class="warn-line"><span>🟡 Overfører for meget</span><span>${kr(d, false)}</span></div>`}`;
+        })() : '') : `<div><span>Egne regninger</span><span>${kr(p.ownExpense, false)}</span></div>`}
+        ${!own && (showJoint || p.jointContribution > 0.5) ? `<div><span>${showJoint ? 'Til fælles' : 'Delte regninger'} (${Math.round((p.jointContribution / (s.joint.need || 1)) * 100) || 0} %)</span><span>${kr(p.jointContribution, false)}</span></div>` : ''}
         ${p.saving ? `<div><span>Opsparing</span><span>${kr(p.saving, false)}</span></div>` : ''}
-        ${p.parked > 0.5 ? `<div class="warn-line"><span>Overført ekstra</span><span>${kr(p.parked, false)}</span></div>` : ''}
-        ${p.parked < -0.5 ? `<div class="warn-line neg"><span>Mangler at overføre</span><span>${kr(-p.parked, false)}</span></div>` : ''}
+        ${!own && p.parked > 0.5 ? `<div class="warn-line"><span>Overført ekstra</span><span>${kr(p.parked, false)}</span></div>` : ''}
+        ${!own && p.parked < -0.5 ? `<div class="warn-line neg"><span>Mangler at overføre</span><span>${kr(-p.parked, false)}</span></div>` : ''}
         <div class="sep"><span>Indtægter</span><span>${kr(p.income, false)}</span></div>
-        <div class="${p.left >= 0 ? 'pos' : 'neg'}"><span>Tilbage til sig selv</span><b>${kr(p.left, false)}</b></div>
+        <div class="${p.left >= 0 ? 'pos' : 'neg'}"><span>Reelt til forbrug</span><b>${kr(p.left, false)}</b></div>
       </div>
-    </button>`).join('');
+    </button>`;
+  const T = s.persons.reduce((t, p) => ({ out: t.out + p.totalOut, sav: t.sav + p.saving, inc: t.inc + p.income, left: t.left + p.left }), { out: 0, sav: 0, inc: 0, left: 0 });
+  const allCard = `
+    <div class="person-card glass total">
+      <div class="pc-name">Alle samlet</div>
+      <div class="pc-total"><span>Går ud i alt</span><b>${kr(T.out, false)}</b><small>/md.</small></div>
+      <div class="pc-lines">
+        ${s.persons.map((p) => `<div><span>${esc(p.name)}</span><span>${kr(p.totalOut, false)}</span></div>`).join('')}
+        ${T.sav ? `<div><span>Opsparing</span><span>${kr(T.sav, false)}</span></div>` : ''}
+        <div class="sep"><span>Indtægter</span><span>${kr(T.inc + s.joint.income, false)}</span></div>
+        <div class="${T.left >= 0 ? 'pos' : 'neg'}"><span>Reelt til forbrug</span><b>${kr(T.left, false)}</b></div>
+      </div>
+    </div>`;
   const joint = `
     <div class="person-card glass joint">
       <div class="pc-name">Fælles <span class="muted small">(${esc(jointAccounts().join(', ') || 'ingen fælleskonti')})</span></div>
@@ -286,11 +323,14 @@ function personsHtml(items, L) {
         <div class="sep"><span>Skal overføres af jer</span><b>${kr(s.joint.need, false)}</b></div>
         <div class="muted small">Fordeles ${Object.entries(s.split).filter(([n]) => people.includes(n)).map(([n, p]) => `${esc(n)} ${Math.round(p)} %`).join(' · ') || 'ligeligt'}</div>
       </div>
-      ${canEdit() ? '<button class="btn small ghost" data-act="joint">Ret fordeling / fælleskonti</button>' : ''}
     </div>`;
-  return `<div class="section-title"><span class="muted small">Tryk på en person for at se deres poster</span>
-      <span class="st-actions">${!showJoint && canEdit() ? '<button class="btn small ghost" data-act="joint">Fælles-indstillinger</button>' : ''}</span></div>
-    <div class="person-grid">${cards}${showJoint ? joint : ''}</div>`;
+  const shown = ui.person ? s.persons.filter((p) => p.name === ui.person) : s.persons;
+  return `<div class="section-title">
+      <div class="av-chips"><button class="av-chip ${!ui.person ? 'on' : ''}" data-person-pick="">Alle</button>${s.persons.map((p) => `<button class="av-chip ${ui.person === p.name ? 'on' : ''}" data-person-pick="${esc(p.name)}">${esc(p.name)}</button>`).join('')}</div>
+      <span class="st-actions">${canEdit() ? `<button class="btn small ghost" data-act="joint">⚙ Sådan deler vi</button>` : ''}</span></div>
+    <p class="muted small">${own ? 'Hver betaler sine egne poster — "Hvem betaler" på posten bestemmer.' : showJoint ? 'Poster på en fælleskonto deles i procent.' : 'Fælles er slået fra.'} ${ui.person ? `Listen nedenfor viser kun ${esc(ui.person)}s poster.` : 'Vælg en person for kun at se deres poster.'}</p>
+    ${own && noOwner ? `<p class="hint warn">${noOwner} ${noOwner === 1 ? 'udgift har' : 'udgifter har'} "Fælles" eller ingen under "Hvem betaler". Åbn posten og vælg, hvem der betaler den.</p>` : ''}
+    <div class="person-grid">${ui.person ? '' : allCard}${shown.map(card).join('')}${showJoint && !ui.person ? joint : ''}</div>`;
 }
 
 function openJointModal() {
@@ -299,7 +339,13 @@ function openJointModal() {
   const ja = jointAccounts();
   const js = state.budget.settings?.jointSplit || {};
   const showJoint = state.budget.settings?.showJoint !== false;
+  const own = shareMode() === 'own';
   const body = `
+    <div class="checks">
+      <label class="check big-check"><input type="radio" name="mode" value="own" ${own ? 'checked' : ''}> <span><b>Hver betaler sine egne poster</b><br><span class="muted small">Fx: Mike betaler al mad, Maria betaler bilen. "Hvem betaler" på hver post bestemmer — også på budgetkontoen. Intet deles i procent.</span></span></label>
+      <label class="check big-check"><input type="radio" name="mode" value="percent" ${own ? '' : 'checked'}> <span><b>Vi deler det fælles i procent</b><br><span class="muted small">Poster på en fælleskonto lægges sammen og deles, fx 50/50.</span></span></label>
+    </div>
+    <div class="percent-settings">
     <label class="check big-check"><input type="checkbox" name="showJoint" ${showJoint ? 'checked' : ''}> Vis "Fælles" under Hvem betaler hvad</label>
     <p class="muted small">Slå fra, hvis du er alene om budgettet eller I ikke har en fælles konto.</p>
     <div class="joint-settings">
@@ -308,12 +354,12 @@ function openJointModal() {
     <p class="muted small">Hvor stor en del af det, fælleskontoen mangler, skal hver person overføre?</p>
     ${people.map((p) => `<label class="split-row"><span>${esc(p)}</span><span class="pct"><input type="number" min="0" max="100" name="js_${esc(p)}" data-p="${esc(p)}" value="${js[p] ?? Math.round(100 / people.length)}"> %</span></label>`).join('')}
     <p class="small" id="js-sum"></p>
-    </div>`;
+    </div></div>`;
   openModal({
-    title: 'Fælles udgifter', body, submitLabel: 'Gem',
+    title: 'Sådan deler vi', body, submitLabel: 'Gem',
     onOpen: (f) => {
-      const tog = () => f.querySelector('.joint-settings').classList.toggle('hidden', !f.showJoint.checked);
-      f.showJoint.addEventListener('change', tog); tog();
+      const tog = () => { f.querySelector('.joint-settings').classList.toggle('hidden', !f.showJoint.checked); f.querySelector('.percent-settings').classList.toggle('hidden', f.mode.value === 'own'); };
+      f.addEventListener('change', tog); tog();
       const upd = () => { const s = [...f.querySelectorAll('[data-p]')].reduce((a, i) => a + (Number(i.value) || 0), 0); const el = f.querySelector('#js-sum'); el.textContent = `I alt ${s} %`; el.className = `small ${s === 100 ? 'pos' : 'neg'}`; };
       f.addEventListener('input', upd); upd();
     },
@@ -321,9 +367,11 @@ function openJointModal() {
       const split = {};
       f.querySelectorAll('[data-p]').forEach((i) => (split[i.dataset.p] = Number(i.value) || 0));
       const sum = Object.values(split).reduce((a, b) => a + b, 0);
+      const mode = fd.get('mode') === 'own' ? 'own' : 'percent';
+      if (mode === 'own') { await updateDoc(budgetRef(), { 'settings.shareMode': 'own', updatedAt: serverTimestamp() }); toast('Gemt — hver betaler sine egne poster'); return true; }
       const on = f.showJoint.checked;
       if (on && people.length && Math.abs(sum - 100) > 0.01) { toast('Procenterne skal give 100 i alt', 'error'); return false; }
-      await updateDoc(budgetRef(), { 'settings.showJoint': on, 'settings.jointAccounts': on ? fd.getAll('ja') : [], 'settings.jointSplit': split, updatedAt: serverTimestamp() });
+      await updateDoc(budgetRef(), { 'settings.shareMode': 'percent', 'settings.showJoint': on, 'settings.jointAccounts': on ? fd.getAll('ja') : [], 'settings.jointSplit': split, updatedAt: serverTimestamp() });
       toast('Fordeling gemt');
     },
   });
@@ -394,7 +442,7 @@ function activeFilterCount() {
 }
 function involves(it, person) {
   if (it.split && Number(it.split[person]) > 0) return true;
-  if (person === 'Fælles') return shareOf(it, jointAccounts()).joint;
+  if (person === 'Fælles') return shareOf(it, effJoint()).joint;
   return it.who === person;
 }
 function filterItems(items, today) {
@@ -491,13 +539,14 @@ function openMoreMenu() {
     body: `<div class="add-choices">
       <button type="button" class="add-opt" data-m="share"><span class="ao-ico">📤</span><span><b>Hent eller del</b><small>PDF eller Excel — til at printe, gemme eller sende til banken</small></span></button>
       <button type="button" class="add-opt" data-m="compare"><span class="ao-ico">🔀</span><span><b>Sammenlign</b><small>Se hvad der har ændret sig siden en tidligere version</small></span></button>
+      ${canEdit() ? '<button type="button" class="add-opt" data-m="import"><span class="ao-ico">📥</span><span><b>Importér fra Excel</b><small>Hent en skabelon, udfyld den, og læs alle poster ind på én gang</small></span></button>' : ''}
       ${canEdit() ? '<button type="button" class="add-opt" data-m="snapshot"><span class="ao-ico">💾</span><span><b>Gem version</b><small>Gem hvordan budgettet ser ud lige nu</small></span></button>' : ''}
     </div>`,
     onOpen: (f) => {
       f.querySelector('[data-m=share]').classList.toggle('hidden', !feature('export'));
       f.querySelector('[data-m=compare]').classList.toggle('hidden', !feature('compare'));
       f.querySelector('[data-m=snapshot]')?.classList.toggle('hidden', !feature('compare'));
-      f.querySelectorAll('[data-m]').forEach((b) => (b.onclick = () => { m.close(); setTimeout(() => ({ share: openShareDialog, compare: openCompareDialog, snapshot: openSaveSnapshot })[b.dataset.m](), 180); }));
+      f.querySelectorAll('[data-m]').forEach((b) => (b.onclick = () => { m.close(); setTimeout(() => ({ share: openShareDialog, compare: openCompareDialog, snapshot: openSaveSnapshot, import: openImport })[b.dataset.m](), 180); }));
     },
   });
 }
@@ -508,7 +557,7 @@ const TYPE_EXPLAIN = {
   transfer: '🔁 Penge I flytter mellem jeres egne konti: fast opsparing og overførsler til fx budgetkontoen.',
 };
 function splitText(it) {
-  const s = shareOf(it, jointAccounts());
+  const s = shareOf(it, effJoint());
   if (s.joint) return 'Fælles';
   return Object.entries(s.parts).map(([n, a]) => (Object.keys(s.parts).length > 1 ? `${n} ${Math.round((a / (monthly(it) || 1)) * 100)} %` : n)).join(' · ');
 }

@@ -953,3 +953,16 @@ body.simple .fab { display: none !important; }
 @media (max-width: 899px) { .add-row [data-act=add] { display: none; } .add-row { justify-content: flex-end; } }
 .bfold .section-head, .bfold .section-title { margin-top: 0; }
 .ar-name .chip { justify-self: start; display: inline-flex; }
+/* Import */
+.imp-list { list-style: none; margin: .5rem 0; padding: 0; max-height: 50vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 12px; }
+.imp-list li { padding: .55rem .7rem; border-top: 1px solid var(--border); }
+.imp-list li:first-child { border-top: 0; }
+.imp-list label.check { display: flex; align-items: flex-start; gap: .6rem; margin: 0; }
+.imp-main { display: grid; gap: .1rem; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.imp-main .chip { margin-top: 0; }
+.imp-amt { font-weight: 700; white-space: nowrap; }
+.imp-list li.bad { background: color-mix(in srgb, var(--neg) 7%, transparent); }
+.person-card.sel { outline: 2px solid var(--accent); }
+.person-card.total { border: 1.5px dashed color-mix(in srgb, var(--accent) 40%, transparent); }
+.av-chip.main { font-weight: 800; }
+.tx-list li.hl, .pv-list li.hl { background: color-mix(in srgb, var(--accent) 16%, transparent); border-radius: 10px; box-shadow: inset 3px 0 0 var(--accent); }

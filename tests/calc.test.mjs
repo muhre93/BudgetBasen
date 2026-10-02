@@ -300,13 +300,14 @@ t('du kan bruge: 26.000 på kontoen', () => {
 });
 
 import { setBankDays, isBankDay, bankHolidays, isPaused, countsInBudget as cib, paysIn as pIn, summarize as sum2 } from '../js/calc.js';
-t('tilbage af lønnen: overfører for lidt → pengene er stadig på lønkontoen', () => {
+t('reelt til forbrug vs. på lønkontoen, når der overføres for lidt', () => {
   const two = [MIKE[0], { ...MIKE[1], amount: 2000 }, MIKE[2]];
   const s = sum2(two, D(2026, 9, 30));
-  close(s.left, 27400, '29.400 − 2.000'); close(s.shortage, 5321, 'budgetkontoen mangler');
+  close(s.left, 22079, 'reelt: 29.400 − 7.321'); close(s.onSalary, 27400, 'på lønkontoen: 29.400 − 2.000'); close(s.shortage, 5321, 'budgetkontoen mangler');
   const ps = personSummary(two, { jointAccounts: [], people: ['Mike'], today: D(2026, 9, 30) });
-  close(ps.persons[0].left, 27400, 'person'); close(ps.persons[0].parked, -5321, 'mangler at overføre');
-  close(sum2(MIKE, D(2026, 9, 30)).left, 6400, 'overfører for meget → 6.400 som før');
+  close(ps.persons[0].left, 22079, 'person reelt'); close(ps.persons[0].onSalary, 27400, 'person lønkonto');
+  const o = sum2(MIKE, D(2026, 9, 30));
+  close(o.left, 6400, 'overfører for meget → 6.400'); close(o.onSalary, 6400, 'samme tal');
 });
 t('pause: tæller ikke med i pauseperioden', () => {
   const it = { type: 'expense', name: 'Institution', amount: 3000, freq: 1, payDay: 1, account: 'B', pause: { from: '2026-07', to: '2026-07' } };

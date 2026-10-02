@@ -20,7 +20,7 @@ function loadScript(src) {
   });
   return loaded[src];
 }
-async function getXLSX() { await loadScript(LIBS.xlsx); return window.XLSX; }
+export async function getXLSX() { await loadScript(LIBS.xlsx); return window.XLSX; }
 async function getJsPDF() { await loadScript(LIBS.jspdf); await loadScript(LIBS.autotable); return window.jspdf.jsPDF; }
 
 const TL = { income: 'Indtægt', expense: 'Udgift', transfer: 'Overførsel' };

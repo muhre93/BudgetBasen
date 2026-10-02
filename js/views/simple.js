@@ -1,6 +1,6 @@
 // Simpel visning: kun det vigtigste i store tal, og "Tilføj" stiller ét spørgsmål ad gangen.
 // Bruger præcis de samme data som den udvidede visning.
-import { state, canEdit, lists, savingsAccounts, jointAccounts, defaultVisibleTo } from '../state.js';
+import { state, canEdit, lists, savingsAccounts, jointAccounts, defaultVisibleTo, mainAccount } from '../state.js';
 import { esc, kr, fmtDate, openModal, toast, parseAmount, currentYm, firstName, lsGet, lsSet } from '../ui.js';
 import {
   monthly, summarize, countsInBudget, dateToIndex, nextPayment, accountFunding, spendable, indexToYm, isTransfer, flowOf,
@@ -21,7 +21,7 @@ export function renderSimple(root) {
   // Hvad skal de store tal vise? Én konto (typisk Budgetkonto) eller hele budgettet.
   const inUse = [...new Set(items.flatMap((i) => [i.account, i.toAccount]).filter(Boolean))];
   let acc = lsGet('bb:simpleAcc', null);
-  if (acc === null) acc = inUse.includes('Budgetkonto') ? 'Budgetkonto' : '';
+  if (acc === null) acc = inUse.includes(mainAccount()) ? mainAccount() : '';
   if (acc && !inUse.includes(acc)) acc = '';
   const full = summarize(items, today, { savingsAccounts: sav });
   const one = acc ? summarize(items, today, { account: acc, savingsAccounts: sav }) : null;

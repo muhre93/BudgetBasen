@@ -134,6 +134,14 @@ Uden disse virker appen stadig — så står der "Egen mail" ved invitationen, s
 - **Likviditet** simulerer saldoen betaling for betaling — ikke bare månedstotaler — så man ser hvis kontoen går i minus den 1., selvom lønnen kommer den 25. Beregnes i hele øre (ingen afrundingsfejl). Samme dag: indtægter før udgifter (som bankerne gør med faste overførsler og Betalingsservice). Betalinger med betalingsdag i dag eller tidligere i indeværende måned regnes som allerede trukket.
 - **Budgetkonto "Bør stå":** for hver udgift på kontoen: beløb × (frekvens − måneder til næste betaling) ÷ frekvens. Forudsætter at den månedlige overførsel lander den 1. Eksempel: årlig forsikring på 1.200 kr. betalt i marts → i september bør der stå 600 kr. Appen viser overskud/manko og den anbefalede månedlige overførsel.
 
+## Nyt i version 9
+- **Importér fra Excel/CSV** (Budget → ⋯ Mere): hent skabelon, udfyld, upload, se listen igennem og gem. Fejl og dubletter markeres. `js/import.js`, `js/importparse.js`, `tests/import.test.mjs`.
+- **"Reelt til forbrug"** er nu det store tal (når alle regninger er dækket). Overføres der for lidt til en konto, står der under tallet, hvad der står på lønkontoen og hvorfor.
+- **Hovedkonto** (Admin → Budgetter): Budget-siden og simpel visning åbner på den. ⭐ i kontoknapperne.
+- **Hvem betaler hvad:** Alle · person-knapper, et "Alle samlet"-kort, og vises også når man ser én konto. Ny indstilling **"Sådan deler vi"**: *hver betaler sine egne poster* (`settings.shareMode = 'own'`) eller *procent*. I "egne poster" vises pr. person: på hovedkontoen, overfører nu, og om det passer.
+- **Bank:** tre faner (Oversigt · Forbrug inkl. faste træk · Posteringer). Konti og forbindelse ligger bag ⚙. Varsler og plan-rækker hopper til selve posteringen og markerer den. Planen viser først det, der ikke passer.
+- **Opdatering:** kun upload af filer (Worker og regler er uændrede siden version 8).
+
 ## Nyt i version 8
 - **Bank: fortegn rettet rigtigt.** Udgifter markeres af banken med `DBIT` (koden var skrevet forkert). Første hentning efter opdateringen henter alt igen. Ind = grønt med plus, ud = almindelig tekst med minus.
 - **Bank-fanen:** kontovælger øverst (alle konti eller én) gælder alle under-faner · egne navne på bankkonti · kompakt kontoliste · alle kasser kan foldes sammen · varsler siger hvad det drejer sig om og hopper til posten · periode (fra–til + "Vis perioden") gælder både Forbrug og Posteringer.

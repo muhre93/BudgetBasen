@@ -16,7 +16,6 @@ import { openItemModal } from './budget.js';
 const SUBS = [
   { id: 'overview', label: 'Oversigt' },
   { id: 'spend', label: 'Forbrug' },
-  { id: 'subs', label: 'Faste træk' },
   { id: 'tx', label: 'Posteringer' },
 ];
 const ui = {
@@ -107,32 +106,39 @@ export function render(root) {
   ensureWatch();
   loadStatus();
   const accounts = ui.accounts;
-  if (!SUBS.some((x) => x.id === ui.sub)) ui.sub = 'overview';
+  if (ui.sub === 'subs') ui.sub = 'spend';
+  if (ui.sub !== 'setup' && !SUBS.some((x) => x.id === ui.sub)) ui.sub = 'overview';
   if (accounts && ui.acc && !accounts.some((a) => a.id === ui.acc)) ui.acc = '';
   const has = accounts && accounts.length > 0;
-  const body = !has || ui.sub === 'overview' ? overviewHtml(accounts) : ui.sub === 'spend' ? spendHtml() : ui.sub === 'subs' ? subsHtml() : txHtml();
+  const body = !has || ui.sub === 'setup' ? setupHtml(accounts) : ui.sub === 'overview' ? overviewHtml(accounts) : ui.sub === 'spend' ? spendHtml() + subsHtml() : txHtml();
   const mine = accounts?.some((a) => a.owners?.includes(state.user.uid));
   root.innerHTML = `<div class="view-wrap bank-view">
     <section class="glass card bank-head">
       <h2>🏦 Bank ${helpBtn('bank')}</h2>
       ${has ? `<label class="bank-accsel"><span class="muted small">Viser</span><select id="bk-acc"><option value="">Alle konti (${accounts.length})</option>${accounts.map((a) => `<option value="${a.id}" ${a.id === ui.acc ? 'selected' : ''}>${esc(acctLabel(a))}</option>`).join('')}</select></label>` : ''}
+      ${has ? `<button class="btn small ${ui.sub === 'setup' ? 'primary' : 'ghost'}" data-bsub="${ui.sub === 'setup' ? 'overview' : 'setup'}" title="Konti og forbindelse til banken" aria-label="Konti og forbindelse">⚙</button>` : ''}
       ${mine ? `<button class="btn small ghost" data-b="sync-all" title="Hent nyt fra banken" ${ui.syncing.size ? 'disabled' : ''}>${ui.syncing.size ? '⏳ Henter …' : '↻ Hent nyt'}</button>` : ''}
     </section>
     ${has ? `<nav class="subtabs glass bank-tabs">${SUBS.map((x) => `<button data-bsub="${x.id}" class="${x.id === ui.sub ? 'active' : ''}">${x.label}</button>`).join('')}</nav>` : ''}
     ${body}
   </div>`;
   bind(root);
+  if (ui.hlScroll) { const el = root.querySelector('.tx-list li.hl'); if (el) { ui.hlScroll = false; setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'center' }), 120); } }
 }
 
 // ---------- Oversigt ----------
 function overviewHtml(accounts) {
-  if (!accounts?.length) return `<section class="glass card"><p class="muted small">Saldo og posteringer hentes direkte fra banken. Appen kan <b>kun læse</b> — den kan aldrig flytte penge.</p>${statusHtml()}</section>${accountsHtml(accounts)}`;
   const planAcc = (ui.acc && accounts.find((a) => a.id === ui.acc)) || accounts.find((a) => a.budgetAccount) || accounts[0];
+  return `${alertsHtml()}${planHtml(planAcc)}`;
+}
+// ⚙ Konti og forbindelse — sættes op én gang
+function setupHtml(accounts) {
+  if (!accounts?.length) return `<section class="glass card"><p class="muted small">Saldo og posteringer hentes direkte fra banken. Appen kan <b>kun læse</b> — den kan aldrig flytte penge.</p>${statusHtml()}</section>`;
   const sess = ui.status?.sessions || [];
   const soon = sess.map((x) => daysLeft(x.validUntil)).filter((d) => d !== null).sort((x, y) => x - y)[0];
   const connSum = !ui.status ? 'tjekker …' : !sess.length ? 'ingen bank koblet på' : `${sess.map((x) => esc(x.bank)).join(', ')} · ${soon <= 14 ? `<span class="${soon <= 0 ? 'neg' : 'warn'}">${soon <= 0 ? 'udløbet' : `udløber om ${soon} dage`}</span>` : `gælder til ${fmtDate(sess.map((x) => x.validUntil).sort()[0])}`}`;
-  return `${alertsHtml()}${accountsHtml(accounts)}${planHtml(planAcc)}
-    ${fold('conn', '🔗 Forbindelse til banken', connSum, `<p class="muted small">Appen kan <b>kun læse</b> saldo og posteringer — den kan aldrig flytte penge.</p>${statusHtml()}`, !sess.length || soon <= 14)}`;
+  return `${accountsHtml(accounts)}
+    ${fold('conn', '🔗 Forbindelse til banken', connSum, `<p class="muted small">Appen kan <b>kun læse</b> saldo og posteringer — den kan aldrig flytte penge.</p>${statusHtml()}`, true)}`;
 }
 
 function alertsHtml() {
@@ -164,15 +170,15 @@ function alertsHtml() {
       rows.push(...m.rows.filter((r) => r.status === 'diff' || r.status === 'missing'));
     }
     for (const r of rows.slice(0, 6)) {
-      if (r.status === 'diff') li('warn', `item:${r.item.id}`, `⚠️ <b>${esc(r.item.name)}</b>: ${r.amount < 0 ? 'trukket' : 'kom ind med'} ${kr(Math.abs(r.tx.amount), false)} den ${fmtDate(r.tx.date)} — i budgettet står ${kr(Math.abs(r.amount), false)}.`);
-      else li('warn', `item:${r.item.id}`, `❌ <b>${esc(r.item.name)}</b> (${kr(Math.abs(r.amount), false)}) er ikke fundet i banken — skulle ${r.amount < 0 ? 'trækkes' : 'komme'} den ${fmtDate(r.date)}.`);
+      if (r.status === 'diff') li('warn', `tx:${r.tx.acct}:${r.tx.date}:${r.tx.id}`, `⚠️ <b>${esc(r.item.name)}</b>: ${r.amount < 0 ? 'trukket' : 'kom ind med'} ${kr(Math.abs(r.tx.amount), false)} den ${fmtDate(r.tx.date)} — i budgettet står ${kr(Math.abs(r.amount), false)}.`);
+      else li('warn', `row:${r.item.id}`, `❌ <b>${esc(r.item.name)}</b> (${kr(Math.abs(r.amount), false)}) er ikke fundet i banken — skulle ${r.amount < 0 ? 'trækkes' : 'komme'} den ${fmtDate(r.date)}.`);
     }
     if (rows.length > 6) li('warn', 'plan', `… og ${rows.length - 6} mere. Se "Plan og virkelighed".`);
     const rises = recurring(all, knownKeys()).filter((r) => r.change > 0 && !r.stale && (today - new Date(r.last)) / 864e5 <= 60);
-    for (const r of rises.slice(0, 3)) li('warn', 'sub:subs', `📈 <b>${esc(r.name)}</b> er steget fra ${kr(r.prevAmount, false)} til ${kr(r.amount, false)}`);
+    for (const r of rises.slice(0, 3)) li('warn', 'subs', `📈 <b>${esc(r.name)}</b> er steget fra ${kr(r.prevAmount, false)} til ${kr(r.amount, false)}`);
   }
   if (!out.length) return '';
-  return fold('alerts', '🔔 Det skal du være opmærksom på', `${out.length} ${out.length === 1 ? 'ting' : 'ting'}`, `<ul class="alert-list">${out.join('')}</ul><p class="muted small">Tryk på en linje for at hoppe hen til den.</p>`, true, 'alerts');
+  return fold('alerts', '🔔 Det skal du være opmærksom på', `${out.length} ${out.length === 1 ? 'ting' : 'ting'}`, `<ul class="alert-list">${out.join('')}</ul><p class="muted small">Tryk på en linje for at hoppe hen til posteringen.</p>`, true, 'alerts');
 }
 
 function statusHtml() {
@@ -256,7 +262,7 @@ function txRow(t, { showAcc = false, rules = txRules() } = {}) {
   const cls = internal ? 'int' : t.amount < 0 ? 'neg' : 'pos';
   const me = (ui.accounts?.find((a) => a.id === t.acct)?.name || '').toLowerCase();
   const showParty = t.party && t.text && !t.text.toLowerCase().includes(t.party.toLowerCase()) && !(me && me.includes(t.party.toLowerCase()));
-  return `<li><span class="tx-date">${fmtDate(t.date).replace(/ \d{4}$/, '')}</span>
+  return `<li data-tx-id="${esc(t.id)}" class="${ui.hl === t.id ? 'hl' : ''}"><span class="tx-date">${fmtDate(t.date).replace(/ \d{4}$/, '')}</span>
     <span class="tx-text">${esc(t.text || t.party || '—')}${showParty ? `<small>${esc(t.party)}</small>` : ''}
       <span class="tx-tags">${internal ? '<span class="chip int">↔️ mellem egne konti</span>' : `<button type="button" class="chip cat-chip" data-tx-cat="${esc(t.id)}" data-tx-acct="${esc(t.acct || '')}" title="Skift kategori">${cat.icon} ${esc(cat.name)}</button>`}${showAcc && t.acct ? `<span class="chip">${esc(accName(t.acct))}</span>` : ''}${t.status && t.status !== 'BOOK' ? '<span class="chip warn">venter</span>' : ''}</span></span>
     <span class="tx-amt ${cls}">${t.amount < 0 ? '−' : '+'}${kr(Math.abs(t.amount), false)}</span></li>`;
@@ -300,10 +306,16 @@ function planHtml(a) {
         <div><span class="muted small">Faktisk ind</span><b class="${m.actual.in + 1 < m.planned.in ? 'warn' : 'pos'}">${kr(m.actual.in, false)}</b></div>
       </div>
       <p class="small">${problems ? `⚠️ ${problems} ting passer ikke med budgettet i ${fmtYm(ui.ym, true)}.` : m.rows.length ? '✅ Alt, der er sket indtil nu, passer med budgettet.' : 'Ingen poster i budgettet på denne konto i måneden.'}</p>
-      <ul class="pv-list">${m.rows.map((r) => `<li class="pv-${r.status}"><button type="button" class="pv-btn" data-open-item="${esc(r.item.id)}" title="Åbn posten">
-        <span class="pv-ico">${ICON[r.status]}</span>
-        <span class="pv-main"><b>${esc(r.item.name)}</b><small>${rowTxt(r)}</small></span>
-        <span class="pv-amt">${kr(Math.abs(r.amount), false)}${r.tx && r.status === 'diff' ? `<small>faktisk ${kr(Math.abs(r.tx.amount), false)}</small>` : ''}</span></button></li>`).join('')}</ul>
+      ${(() => {
+        const row = (r) => `<li class="pv-${r.status} ${ui.hlRow === r.item.id ? 'hl' : ''}" data-row-item="${esc(r.item.id)}"><button type="button" class="pv-btn" ${r.tx ? `data-alert="tx:${esc(r.tx.acct)}:${r.tx.date}:${esc(r.tx.id)}" title="Vis posteringen"` : `data-open-item="${esc(r.item.id)}" title="Åbn posten i budgettet"`}>
+          <span class="pv-ico">${ICON[r.status]}</span>
+          <span class="pv-main"><b>${esc(r.item.name)}</b><small>${rowTxt(r)}</small></span>
+          <span class="pv-amt">${kr(Math.abs(r.amount), false)}${r.tx && r.status === 'diff' ? `<small>faktisk ${kr(Math.abs(r.tx.amount), false)}</small>` : ''}</span></button></li>`;
+        const bad = m.rows.filter((r) => ['diff', 'missing', 'late'].includes(r.status));
+        const fine = m.rows.filter((r) => !['diff', 'missing', 'late'].includes(r.status));
+        return `${bad.length ? `<ul class="pv-list">${bad.map(row).join('')}</ul>` : ''}
+          ${fine.length ? `<details class="pv-more" data-fold="planall" ${isOpen('planall', false) ? 'open' : ''}><summary>${bad.length ? `Vis resten (${fine.length} der passer eller kommer senere)` : `Vis alle ${fine.length} poster`}</summary><ul class="pv-list">${fine.map(row).join('')}</ul></details>` : ''}`;
+      })()}
       ${m.unplanned.length ? `<details class="pv-more"><summary>Ikke i budgettet i ${fmtYm(ui.ym, true)} (${m.unplanned.length})</summary>
         <ul class="tx-list">${m.unplanned.slice(0, 40).map((t) => txRow(t)).join('')}</ul></details>` : ''}
       ${m.internal.length ? `<p class="muted small">↔️ ${m.internal.length} overførsel${m.internal.length === 1 ? '' : 'er'} mellem jeres egne konti er genkendt og tæller ikke som udgift.</p>` : ''}`;
@@ -390,7 +402,7 @@ function spendHtml() {
 function subsHtml() {
   const all = useTx(selAccounts(), lastMonths(13));
   const where = `<span class="muted small">${ui.acc ? esc(accName(ui.acc)) : 'alle konti'} · de sidste 12 mdr.</span>`;
-  if (!all) return `<section class="glass card"><div class="section-head"><h2>Faste træk</h2>${where}</div><p class="muted">Henter posteringer …</p></section>`;
+  if (!all) return fold('subs', '🔁 Faste træk og abonnementer', '', '<p class="muted">Henter posteringer …</p>');
   const list = recurring(all, knownKeys());
   const active = list.filter((r) => !r.stale);
   const itemTok = state.items.map((it) => tokens(`${it.name} ${it.supplier || ''}`));
@@ -398,15 +410,13 @@ function subsHtml() {
   const FREQ = { 1: 'hver måned', 3: 'hvert kvartal', 6: 'hvert halve år', 12: 'hvert år' };
   const total = active.reduce((s2, r) => s2 + r.monthly, 0);
   ui.subs = list;
-  return `<section class="glass card">
-    <div class="section-head"><h2>Faste træk og abonnementer ${helpBtn('bankSubs')}</h2>${where}</div>
+  return fold('subs', `🔁 Faste træk og abonnementer ${helpBtn('bankSubs')}`, active.length ? `${active.length} stk. · ${kr(total, false)}/md.` : '', `${where}
     ${active.length ? `<p class="spend-summary">I har <b>${active.length}</b> faste træk, der tilsammen koster ca. <b>${kr(total, false)} om måneden</b> (${kr(total * 12, false)} om året).</p>` : '<p class="muted">Appen har ikke fundet faste træk endnu. Der skal typisk bruges 2–3 måneders posteringer.</p>'}
     <ul class="pv-list subs-list">${list.map((r, i) => `<li class="plain ${r.stale ? 'stale' : ''}">
       <span class="pv-ico">${r.change > 0 ? '📈' : r.change < 0 ? '📉' : '🔁'}</span>
       <span class="pv-main"><b>${esc(r.name)}</b><small>${FREQ[r.freq]} · sidst ${fmtDate(r.last)}${r.stale ? ' · ser ud til at være stoppet' : ''}${r.change ? ` · <span class="${r.change > 0 ? 'neg' : 'pos'}">${r.change > 0 ? 'steget' : 'faldet'} fra ${kr(r.prevAmount, false)}</span>` : ''}</small></span>
       <span class="pv-amt">${kr(r.amount, false)}${r.freq > 1 ? `<small>= ${kr(r.monthly, false)}/md.</small>` : ''}
-        ${inBudget(r) ? '<small class="pos">✓ i budgettet</small>' : canEdit() && !r.stale ? `<button class="btn small ghost" data-add-sub="${i}">＋ Til budget</button>` : ''}</span></li>`).join('')}</ul>
-  </section>`;
+        ${inBudget(r) ? '<small class="pos">✓ i budgettet</small>' : canEdit() && !r.stale ? `<button class="btn small ghost" data-add-sub="${i}">＋ Til budget</button>` : ''}</span></li>`).join('')}</ul>`);
 }
 
 // ---------- Posteringer: periode og søgning ----------
@@ -455,7 +465,8 @@ function openCatPicker(t) {
   });
 }
 const openItemById = (id) => { const it = state.items.find((x) => x.id === id); if (it) openItemModal(it); else toast('Posten findes ikke længere', 'error'); };
-const scrollToFold = (id) => setTimeout(() => { const el = document.querySelector(`[data-fold="${id}"]`); if (el) { el.open = true; foldState[id] = true; el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, 80);
+const scrollToSel = (sel) => setTimeout(() => document.querySelector(sel)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 150);
+const scrollToFold = (id) => setTimeout(() => { const el = document.querySelector(`[data-fold="${id}"]`); if (el) { el.open = true; foldState[id] = true; el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, 200);
 
 function bind(root) {
   const w = root.firstElementChild;
@@ -485,11 +496,21 @@ function bind(root) {
     }
     const al = e.target.closest('[data-alert]');
     if (al) {
-      const [kind, arg] = al.dataset.alert.split(':');
+      const [kind, ...rest] = al.dataset.alert.split(':');
+      const arg = rest[0];
+      if (kind === 'tx') {
+        // Hop til selve posteringen: rigtig konto, hele måneden, og markér linjen
+        const [acct, date] = rest; const id = rest.slice(2).join(':');
+        const [y, mo] = date.split('-').map(Number);
+        ui.sub = 'tx'; ui.acc = ui.accounts.some((x) => x.id === acct) ? acct : ''; ui.q = ''; ui.quick = '';
+        ui.from = `${date.slice(0, 7)}-01`; ui.to = isoDate(new Date(y, mo, 0));
+        ui.hl = id; ui.hlScroll = true; saveUi(); emit();
+      }
+      if (kind === 'row') { ui.sub = 'overview'; ui.ym = currentYm(); ui.hlRow = arg; foldState.planall = true; foldState.plan = true; emit(); scrollToSel(`[data-row-item="${arg}"]`); }
       if (kind === 'item') openItemById(arg);
-      if (kind === 'conn') scrollToFold('conn');
+      if (kind === 'conn') { ui.sub = 'setup'; saveUi(); emit(); scrollToFold('conn'); }
       if (kind === 'plan') scrollToFold('plan');
-      if (kind === 'sub') { ui.sub = arg; saveUi(); window.scrollTo({ top: 0 }); emit(); }
+      if (kind === 'subs') { ui.sub = 'spend'; foldState.subs = true; saveUi(); emit(); scrollToFold('subs'); }
       if (kind === 'view') location.hash = arg;
     }
     const oi = e.target.closest('[data-open-item]');

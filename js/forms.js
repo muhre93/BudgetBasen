@@ -1,5 +1,5 @@
 // Formular-hjælpere: dropdowns bygget på de fleksible lister, med "+ Tilføj ny…" direkte i menuen.
-import { lists, canEdit, LIST_DEFS, state, members, ALL, jointAccounts } from './state.js';
+import { lists, canEdit, LIST_DEFS, state, members, ALL, jointAccounts, effJoint } from './state.js';
 import { helpBtn } from './help.js';
 import { esc, promptDialog, toast, errorToast } from './ui.js';
 import { addListValue, addFrequency } from './data.js';
@@ -127,7 +127,7 @@ export function bindSplit(form, getMonthly) {
   const rows = box.querySelector('.split-rows');
   const inputs = [...box.querySelectorAll('[data-person]')];
   const upd = () => {
-    const joint = jointAccounts().includes(form.account?.value);
+    const joint = effJoint().includes(form.account?.value);
     box.querySelector('.split-joint').classList.toggle('hidden', !joint);
     box.querySelector('.split-body').classList.toggle('hidden', joint);
     rows.classList.toggle('hidden', !form.useSplit.checked);
@@ -152,7 +152,7 @@ export function bindSplit(form, getMonthly) {
 }
 /** Returnerer {navn: pct} eller null. Kaster fejl hvis summen ikke er 100. */
 export function readSplit(form) {
-  if (!form.useSplit?.checked || jointAccounts().includes(form.account?.value)) return null;
+  if (!form.useSplit?.checked || effJoint().includes(form.account?.value)) return null;
   const out = {};
   form.querySelectorAll('[data-person]').forEach((i) => { const v = Number(i.value); if (v > 0) out[i.dataset.person] = Math.round(v * 100) / 100; });
   const sum = Object.values(out).reduce((a, b) => a + b, 0);

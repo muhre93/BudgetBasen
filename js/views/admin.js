@@ -1,7 +1,7 @@
 // Admin: budgetter, medlemmer & invitationer, fleksible lister, frekvenser, delte links, versioner, log og eksport.
-import { state, isAdmin, isOwner, canEdit, lists, LIST_DEFS, ROLES, ROLE_HELP, role, ALL, jointAccounts, savingsAccounts } from '../state.js';
+import { state, isAdmin, isOwner, canEdit, lists, LIST_DEFS, ROLES, ROLE_HELP, role, ALL, jointAccounts, savingsAccounts, mainAccount } from '../state.js';
 import {
-  esc, kr, fmtDate, openModal, confirmDialog, promptDialog, toast, errorToast, copyText, download, toDate,
+  esc, kr, fmtDate, openModal, confirmDialog, promptDialog, toast, errorToast, copyText, download, toDate, lsSet,
 } from '../ui.js';
 import { freqLabel, monthly } from '../calc.js';
 import {
@@ -67,6 +67,8 @@ function budgets(el, root) {
         <button class="btn ghost" id="ad-dup">Kopiér til nyt budget</button>
         ${isOwner() ? '<button class="btn danger-ghost" id="ad-del">Slet budget permanent</button>' : '<button class="btn danger-ghost" id="ad-leave">Forlad budget</button>'}
       </div>
+      ${isAdmin() ? `<label class="bank-toggle">⭐ Hovedkonto — den konto budgettet handler om. Budget-siden og simpel visning åbner på den.
+        <select id="ad-main"><option value="">Ingen (åbn på hele budgettet)</option>${lists().accounts.map((a) => `<option ${a === mainAccount() ? 'selected' : ''}>${esc(a)}</option>`).join('')}</select></label>` : ''}
       ${isAdmin() ? `<label class="check big-check bank-toggle"><input type="checkbox" id="ad-bankdays" ${state.budget.settings?.bankDays !== false ? 'checked' : ''}>
         <span>📅 <b>Regn med bankdage</b><br><span class="muted small">Falder en betaling i en weekend eller på en helligdag, trækkes den næste bankdag — og løn kommer bankdagen før. Bruges i Likviditet og "Du kan bruge".</span></span></label>` : ''}
       ${isAdmin() && feature('bank') ? `<label class="check big-check bank-toggle"><input type="checkbox" id="ad-bank" ${state.budget.settings?.bank ? 'checked' : ''}>
@@ -82,6 +84,10 @@ function budgets(el, root) {
     try { const id = await createDemoBudget(); ui.selectBudget?.(id); } catch (err) { errorToast(err); } finally { e.target.disabled = false; }
   };
   el.querySelector('#ad-guide').onclick = () => showWelcome();
+  el.querySelector('#ad-main')?.addEventListener('change', (e) => {
+    lsSet('bb:bView', e.target.value);
+    updateBudget({ 'settings.mainAccount': e.target.value }, `Hovedkonto: ${e.target.value || 'ingen'}`).then(() => toast('Hovedkonto gemt')).catch(errorToast);
+  });
   el.querySelector('#ad-bankdays')?.addEventListener('change', (e) => {
     updateBudget({ 'settings.bankDays': e.target.checked }, e.target.checked ? 'Bankdage slået til' : 'Bankdage slået fra').then(() => toast('Gemt')).catch(errorToast);
   });
