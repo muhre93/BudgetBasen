@@ -12,7 +12,7 @@ export const THEMES = [
   { id: 'nordlys', name: 'Nordlys', dark: true, sw: ['#0b1020', '#6c5cff', '#16c7b4', '#7c8cff'] },
   { id: 'midnat', name: 'Midnat', dark: true, sw: ['#0f1726', '#1d3a66', '#2a2350', '#6ea8ff'] },
 ];
-const DEFAULTS = { day: 'morgen', night: 'nordlys', mode: 'day', simple: false };
+const DEFAULTS = { day: 'morgen', night: 'nordlys', mode: 'day', simple: false, hidden: [] };
 
 let prefs = { ...DEFAULTS, ...lsGet('bb:prefs', {}) };
 let uid = null;

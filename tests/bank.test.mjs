@@ -35,6 +35,9 @@ const calls = [];
 const TX = [
   { entry_reference: 'r1', transaction_amount: { amount: '21963.00', currency: 'DKK' }, credit_debit_indicator: 'DBDT', booking_date: '2026-09-15', creditor: { name: 'Totalkredit' }, remittance_information: ['Totalkredit termin'] },
   { entry_reference: 'r2', transaction_amount: { amount: '23000.00', currency: 'DKK' }, credit_debit_indicator: 'CRDT', booking_date: '2026-09-30', debtor: { name: 'Lasse' }, debtor_account: { iban: 'DK5000400440116243' } },
+  // Sparekasse-stil: ingen ind/ud-markering, minus foran beløbet, og kontoen selv står som "debtor"
+  { entry_reference: 'r3', transaction_amount: { amount: '-161.00', currency: 'DKK' }, booking_date: '2026-09-21', creditor: { name: 'NETTO AALBORGVEJ' }, debtor: { name: 'Mike' }, debtor_account: { iban: 'DK12 3456 7890 1234 56' } },
+  { entry_reference: 'r4', transaction_amount: { amount: '100.00', currency: 'DKK' }, booking_date: '2026-09-28', debtor: { name: 'Kirsten' }, creditor_account: { iban: 'DK12 3456 7890 1234 56' } },
 ];
 globalThis.fetch = async (url, opts = {}) => {
   if (url.startsWith('https://www.googleapis.com/')) return new Response(JSON.stringify({ keys: [gjwk] }), { status: 200, headers: { 'Cache-Control': 'max-age=600' } });
@@ -57,7 +60,7 @@ globalThis.fetch = async (url, opts = {}) => {
   ] });
   if (path === '/accounts/acc-1/balances') return J({ balances: [{ balance_type: 'ITAV', balance_amount: { amount: '6500.00', currency: 'DKK' } }, { balance_type: 'ITBD', balance_amount: { amount: '6000.00', currency: 'DKK' }, reference_date: '2026-10-01' }] });
   if (path.startsWith('/accounts/acc-1/transactions')) {
-    return path.includes('continuation_key=k2') ? J({ transactions: [TX[1]] }) : J({ transactions: [TX[0]], continuation_key: 'k2' });
+    return path.includes('continuation_key=k2') ? J({ transactions: [TX[1], TX[2], TX[3]] }) : J({ transactions: [TX[0]], continuation_key: 'k2' });
   }
   if (path.startsWith('/accounts/acc-2/')) return J({ message: 'Session expired' }, 401);
   if (path.startsWith('/sessions/') && opts.method === 'DELETE') return J({});
@@ -153,8 +156,11 @@ await t('sync: saldo (bogført) + alle sider med posteringer', async () => {
   const r = await j(await call('POST', '/bank/sync', L, { key: keys[0], dateFrom: '2026-07-01' }));
   assert.equal(r.status, 200);
   assert.equal(r.balance.amount, 6000); assert.equal(r.balance.available, 6500);
-  assert.equal(r.transactions.length, 2);
-  assert.deepEqual(r.transactions.map((x) => x.amount), [-21963, 23000]);
+  assert.equal(r.transactions.length, 4);
+  assert.deepEqual(r.transactions.map((x) => x.amount), [-21963, 23000, -161, 100], 'minus foran beløbet = ud');
+  assert.equal(r.transactions[2].party, 'NETTO AALBORGVEJ');
+  assert.equal(r.transactions[2].partyKey, '', 'kontoen selv er ikke "en anden egen konto"');
+  assert.equal(r.transactions[3].party, 'Kirsten');
   assert.equal(r.transactions[0].party, 'Totalkredit');
   assert.match(r.transactions[1].partyKey, /^[0-9a-f]{24}$/);
   assert.ok(!JSON.stringify(r).includes('DK5000400440116243'), 'modpartens kontonummer sendes ikke i klartekst');

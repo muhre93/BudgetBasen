@@ -134,8 +134,8 @@ const cache = new Map(); // `${key}_${ym}` → txs
 export async function loadMonths(acct, yms) {
   const out = [];
   await Promise.all(yms.map(async (ym) => {
-    const id = `${acct.id}_${ym}`;
-    if (!(acct.months || []).includes(ym)) { cache.set(id, []); return; }
+    const id = `${acct.id}_${ym}|${acct.syncedAt || ''}`;
+    if (!(acct.months || []).includes(ym)) return;
     if (!cache.has(id)) {
       try { const s = await getDoc(txRef(acct.id, ym)); cache.set(id, s.exists() ? s.data().txs || [] : []); } catch { cache.set(id, []); }
     }
@@ -145,15 +145,19 @@ export async function loadMonths(acct, yms) {
 }
 export const clearTxCache = () => cache.clear();
 
+const TXV = 2; // version af posteringsformatet — ved ny version hentes alt igen (fx rettet fortegn)
+
 /** Hent nyt fra banken for én konto og gem det. Returnerer { balance, count }. */
 export async function syncAccount(acct) {
   const me = state.user.uid;
   if (!acct.owners?.includes(me)) throw new Error('Kun den der har koblet kontoen på, kan hente nyt');
   const known = (acct.months || []).slice().sort();
-  const dateFrom = known.length && acct.syncedAt
-    ? isoDate(new Date(Math.min(Date.now() - 10 * 864e5, (acct.syncedAt?.toMillis?.() ?? acct.syncedAt) - 7 * 864e5)))
-    : isoDate(new Date(Date.now() - 365 * 864e5));
+  const full = acct.txv !== TXV || !known.length || !acct.syncedAt;
+  const dateFrom = full
+    ? isoDate(new Date(Date.now() - 365 * 864e5))
+    : isoDate(new Date(Math.min(Date.now() - 10 * 864e5, (acct.syncedAt?.toMillis?.() ?? acct.syncedAt) - 7 * 864e5)));
   const r = await bankApi('/sync', { method: 'POST', body: { key: acct.id, dateFrom } });
+  const from = r.from || dateFrom;
   const byMonth = new Map();
   for (const t of r.transactions || []) {
     if (!t.date) continue;
@@ -161,31 +165,56 @@ export async function syncAccount(acct) {
     if (!byMonth.has(ym)) byMonth.set(ym, []);
     byMonth.get(ym).push(t);
   }
+  // Ved fuld hentning erstattes også måneder, hvor banken nu ikke sender noget
+  if (full) for (const ym of known) if (ym >= from.slice(0, 7) && !byMonth.has(ym)) byMonth.set(ym, []);
   const months = new Set(known);
   for (const [ym, list] of byMonth) {
     let old = [];
     try { const s = await getDoc(txRef(acct.id, ym)); if (s.exists()) old = s.data().txs || []; } catch (e) { console.warn('kan ikke læse', ym, e); continue; } // overskriv aldrig noget, vi ikke kan se
-    const map = new Map(old.filter((t) => t.status === 'BOOK' || !t.status).map((t) => [t.id, t]));
-    // Ventende posteringer udskiftes hver gang; bogførte lægges sammen
-    for (const t of old) if (t.status && t.status !== 'BOOK' && t.date < r.from) map.set(t.id, t);
+    // Banken sender ALT fra "from" og frem → det gamle i det tidsrum erstattes helt (ventende og rettede posteringer forsvinder korrekt)
+    const map = new Map(old.filter((t) => t.date < from).map((t) => [t.id, t]));
     for (const t of list) map.set(t.id, t);
     const txs = [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
+    if (!txs.length && !old.length) continue;
     await setDoc(txRef(acct.id, ym), { acct: acct.id, ym, txs, visibleTo: acct.visibleTo, updatedAt: serverTimestamp() });
-    cache.set(`${acct.id}_${ym}`, txs);
     months.add(ym);
   }
+  const allDates = (r.transactions || []).map((t) => t.date).filter(Boolean).sort();
+  const dataFrom = [acct.dataFrom, allDates[0]].filter(Boolean).sort()[0] || null;
   const bal = r.balance || {};
   await updateDoc(acctRef(acct.id), {
     balance: bal.amount ?? null, available: bal.available ?? null, balanceAt: bal.at || isoDate(),
-    syncedAt: Date.now(), months: [...months].sort(), [`linked.${me}.validUntil`]: r.validUntil || null,
+    syncedAt: Date.now(), months: [...months].sort(), txv: TXV, dataFrom, requestedFrom: full ? from : (acct.requestedFrom || from),
+    [`linked.${me}.validUntil`]: r.validUntil || null,
   });
   // Saldoen bruges automatisk i budgettet ("Du kan bruge …" og Likviditet)
-  if (acct.budgetAccount && bal.amount != null && canEdit()) {
-    const list = (state.budget.settings?.balances || []).filter((b) => b.account !== acct.budgetAccount);
-    list.push({ account: acct.budgetAccount, amount: bal.amount, date: isoDate(), source: 'bank' });
-    await saveBalances(list);
-  }
+  if (acct.budgetAccount && bal.amount != null && canEdit()) await queueBalance(acct.budgetAccount, bal.amount);
   return { balance: bal.amount, count: (r.transactions || []).length };
+}
+
+// Flere konti kan hentes samtidig — saldoerne skrives én ad gangen med friske data, så de ikke overskriver hinanden.
+let balQueue = Promise.resolve();
+function queueBalance(account, amount) {
+  balQueue = balQueue.then(async () => {
+    const snap = await getDoc(doc(db, 'budgets', state.budgetId));
+    const cur = snap.exists() ? snap.data().settings?.balances || [] : state.budget.settings?.balances || [];
+    const old = cur.find((b) => b.account === account);
+    if (old && old.amount === amount && old.date === isoDate() && old.source === 'bank') return;
+    await saveBalances([...cur.filter((b) => b.account !== account), { account, amount, date: isoDate(), source: 'bank' }]);
+  }).catch((e) => console.warn('saldo', e));
+  return balQueue;
+}
+
+/** Egne kategori-regler: "posteringer fra X er altid Y". Gemmes på budgettet. */
+export const ruleKey = (k) => String(k).replace(/[^a-zæøåäöü]+/g, '_').slice(0, 60);
+export function txRules() {
+  const r = state.budget?.settings?.txRules || {};
+  const out = {};
+  for (const [k, v] of Object.entries(r)) out[k.replace(/_/g, ' ')] = v;
+  return out;
+}
+export async function saveTxRule(partyKey, cat) {
+  await updateDoc(doc(db, 'budgets', state.budgetId), { [`settings.txRules.${ruleKey(partyKey)}`]: cat });
 }
 
 /** Konti der trænger til at blive hentet (ældre end 6 timer), og som du selv har koblet på. */

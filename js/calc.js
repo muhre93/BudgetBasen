@@ -58,15 +58,67 @@ export const monthly = (item) => (Number(item.amount) || 0) / freqOf(item);
 /** Årlig ækvivalent i kr. */
 export const yearly = (item) => monthly(item) * 12;
 
-/** Betalingsdag i en bestemt måned (31 bliver til 30/29/28 i korte måneder). */
-export function payDayIn(item, mi) {
-  const d = Math.round(Number(item.payDay)) || 1;
-  return Math.min(Math.max(d, 1), daysInMonthIdx(mi));
+// ---------- Bankdage ----------
+// Falder en betaling på en weekend eller helligdag, trækker banken først næste bankdag,
+// og løn kommer bankdagen før. Slås til med setBankDays(true) (appen gør det; tests kan vælge).
+let BANKDAYS = false;
+export const setBankDays = (on) => { BANKDAYS = !!on; };
+export const bankDaysOn = () => BANKDAYS;
+const holidayCache = new Map();
+function easter(y) { // Gauss/Meeus
+  const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31), day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(y, month - 1, day);
+}
+/** Danske bankfridage (helligdage + grundlovsdag, juleaften og nytårsaften). */
+export function bankHolidays(y) {
+  if (holidayCache.has(y)) return holidayCache.get(y);
+  const e = easter(y);
+  const rel = (n) => { const d = new Date(e); d.setDate(d.getDate() + n); return `${d.getMonth() + 1}-${d.getDate()}`; };
+  const set = new Set(['1-1', '6-5', '12-24', '12-25', '12-26', '12-31', rel(-3), rel(-2), rel(1), rel(39), rel(50)]);
+  holidayCache.set(y, set);
+  return set;
+}
+export function isBankDay(d) {
+  const wd = d.getDay();
+  return wd !== 0 && wd !== 6 && !bankHolidays(d.getFullYear()).has(`${d.getMonth() + 1}-${d.getDate()}`);
 }
 
-/** Er posten aktiv i måned mi (mellem startMonth og endMonth, og ikke slået fra)? */
+/** Betalingsdag i en bestemt måned. 31 = sidste dag i måneden. Med bankdage flyttes dagen
+ *  til næste bankdag (udgifter/overførsler) eller forrige bankdag (indtægter) — inden for måneden. */
+export function payDayIn(item, mi) {
+  const dim = daysInMonthIdx(mi);
+  let d = Math.min(Math.max(Math.round(Number(item.payDay)) || 1, 1), dim);
+  if (!BANKDAYS) return d;
+  const y = Math.floor(mi / 12), m = mi % 12;
+  const ok = (x) => isBankDay(new Date(y, m, x));
+  if (ok(d)) return d;
+  const back = item.type === 'income';
+  for (let k = 1; k < 8; k++) {
+    const x = back ? d - k : d + k;
+    if (x >= 1 && x <= dim && ok(x)) return x;
+  }
+  for (let k = 1; k < 8; k++) { // ved månedens kant: den anden vej
+    const x = back ? d + k : d - k;
+    if (x >= 1 && x <= dim && ok(x)) return x;
+  }
+  return d;
+}
+
+/** Er posten sat på pause i måned mi?  pause: { from: 'ÅÅÅÅ-MM', to: 'ÅÅÅÅ-MM' | null (indtil videre) } */
+export function isPaused(item, mi) {
+  const p = item.pause;
+  if (!p || !p.from) return false;
+  const f = ymToIndex(p.from), t = ymToIndex(p.to);
+  return mi >= f && (t === null || mi <= t);
+}
+
+/** Er posten aktiv i måned mi (mellem startMonth og endMonth, ikke slået fra og ikke på pause)? */
 export function isRunning(item, mi) {
   if (item.active === false) return false;
+  if (isPaused(item, mi)) return false;
   const s = ymToIndex(item.startMonth);
   const e = ymToIndex(item.endMonth);
   if (s !== null && mi < s) return false;
@@ -83,9 +135,10 @@ export function paysIn(item, mi) {
   return (((mi - anchor) % f) + f) % f === 0;
 }
 
-/** Tæller posten med i det normaliserede månedsbudget? (aktiv og ikke udløbet) */
+/** Tæller posten med i det normaliserede månedsbudget? (aktiv, ikke udløbet, ikke på pause nu) */
 export function countsInBudget(item, nowIdx) {
   if (item.active === false) return false;
+  if (isPaused(item, nowIdx)) return false;
   const e = ymToIndex(item.endMonth);
   return e === null || e >= nowIdx;
 }
@@ -174,11 +227,14 @@ export function summarize(items, today = new Date(), opts = {}) {
     res.byCategory[cKey] = (res.byCategory[cKey] || 0) + m;
   }
   res.net = res.income - res.expense - res.saving;
-  // Samlet: penge der overføres til fx budgetkontoen ud over det regningerne koster, hober sig op dér —
-  // de er ikke "tilbage af lønnen" til forbrug. De vises for sig.
+  // "Tilbage af lønnen" = det der faktisk er tilbage, når alt det, der trækkes eller overføres fra
+  // lønnen, er gået ud. Overføres der MERE til fx budgetkontoen end regningerne koster, er pengene
+  // stadig væk fra lønnen (−excess). Overføres der MINDRE, er de ikke taget fra lønnen endnu (+shortage) —
+  // og kontoen, der mangler penge, vises for sig.
   res.funding = opts.account ? [] : accountFunding(items, { savingsAccounts: opts.savingsAccounts || [], today });
   res.excess = res.funding.reduce((a, f) => a + f.excess, 0);
-  res.left = res.net - res.excess;
+  res.shortage = res.funding.reduce((a, f) => a + Math.max(0, -f.diff), 0);
+  res.left = res.net - res.excess + res.shortage;
   res.yearLeft = res.left * 12;
   res.yearIncome = res.income * 12;
   res.yearExpense = res.expense * 12;
@@ -413,11 +469,13 @@ export function personSummary(items, { jointAccounts = [], jointSplit = null, pe
   let split = jointSplit && Object.values(jointSplit).some((p) => Number(p) > 0) ? jointSplit : null;
   if (!split) split = Object.fromEntries(names.map((n) => [n, 100 / (names.length || 1)]));
   const total = Object.entries(split).filter(([n]) => persons[n]).reduce((s, [, p]) => s + Number(p || 0), 0);
-  // Overført for meget til en konto → den del er "parkeret" dér og ikke til forbrug.
+  // Overført for meget til en konto → den del er "parkeret" dér og ikke til forbrug (+).
+  // Overført for lidt → pengene er ikke taget fra lønnen endnu (−), men kontoen mangler dem.
   const funding = accountFunding(items, { savingsAccounts, today });
   const parked = {};
   for (const f of funding) {
-    if (!f.excess) continue;
+    const diff = f.excess || (f.diff < 0 ? f.diff : 0);
+    if (!diff) continue;
     const shares = {};
     let tot = 0;
     for (const it of items) {
@@ -427,7 +485,7 @@ export function personSummary(items, { jointAccounts = [], jointSplit = null, pe
         shares[name] = (shares[name] || 0) + amt; tot += amt;
       }
     }
-    for (const [name, amt] of Object.entries(shares)) parked[name] = (parked[name] || 0) + (tot ? (f.excess * amt) / tot : 0);
+    for (const [name, amt] of Object.entries(shares)) parked[name] = (parked[name] || 0) + (tot ? (diff * amt) / tot : 0);
   }
   for (const n of names) {
     const p = persons[n];

@@ -35,7 +35,7 @@ export function openShareDialog() {
     </div>
     <div class="share-pick">
       <div class="row-between"><b>Hvilke poster skal med?</b><span><button type="button" class="link" data-all>Alle</button> · <button type="button" class="link" data-none>Ingen</button> · <button type="button" class="link" data-nopriv>Fravælg private</button></span></div>
-      ${groups.map(([t, list]) => list.length ? `<div class="pick-group"><h4>${{ income: 'Indtægter', expense: 'Udgifter', transfer: 'Opsparing & overførsler' }[t]}</h4>
+      ${groups.map(([t, list]) => list.length ? `<div class="pick-group"><h4>${{ income: 'Indtægter', expense: 'Udgifter', transfer: 'Opsparing og overførsler' }[t]}</h4>
         ${list.map((i) => `<label class="check pick"><input type="checkbox" name="pick" value="${i.id}" data-private="${i.private || !isShared(i) ? 1 : 0}" ${i.private || !isShared(i) ? '' : 'checked'}>
           <span>${esc(i.name)}<small class="muted"> · ${esc(i.category || '')}</small></span><span class="num">${kr(monthly(i))}/md.</span></label>`).join('')}
       </div>` : '').join('')}
@@ -141,7 +141,7 @@ export function reportHtml(r) {
     </section>
     ${r.sections.some((s) => s.type === 'income') ? `<h2>Indtægter</h2><table class="r-table">${head}${sec('income')}</table>` : ''}
     ${r.sections.some((s) => s.type === 'expense') ? `<h2>Udgifter</h2><table class="r-table">${head}${sec('expense')}</table>` : ''}
-    ${r.sections.some((s) => s.type === 'transfer') ? `<h2>Opsparing & overførsler</h2><table class="r-table">${head}${sec('transfer')}</table>` : ''}
+    ${r.sections.some((s) => s.type === 'transfer') ? `<h2>Opsparing og overførsler</h2><table class="r-table">${head}${sec('transfer')}</table>` : ''}
     ${r.cashflow ? `<h2>Likviditet næste 12 måneder</h2><table class="r-table">
       <tr><th>Måned</th><th class="num">Start</th><th class="num">Ind</th><th class="num">Ud</th><th class="num">Laveste</th><th class="num">Slut</th></tr>
       ${r.cashflow.map((m) => `<tr><td>${fmtYm(m.ym)}</td><td class="num">${kr(m.start, false)}</td><td class="num">${kr(m.income, false)}</td><td class="num">${kr(m.expense, false)}</td><td class="num">${kr(m.min, false)}</td><td class="num">${kr(m.end, false)}</td></tr>`).join('')}

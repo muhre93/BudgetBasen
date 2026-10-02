@@ -42,7 +42,7 @@ budgetbasen/
 
 ## Opsætning trin for trin (ca. 20 min.)
 
-> Tests: `node tests/calc.test.mjs`, `node tests/worker.test.mjs`, `node tests/bank.test.mjs`, `node tests/bankmatch.test.mjs`.
+> Tests: `node tests/calc.test.mjs`, `node tests/worker.test.mjs`, `node tests/bank.test.mjs`, `node tests/bankmatch.test.mjs`, `node tests/categorize.test.mjs`.
 
 ### 1. Opret Firebase-projekt
 1. Gå til <https://console.firebase.google.com> → **Tilføj projekt** → giv det et navn (f.eks. `budgetbasen`). Google Analytics er ikke nødvendigt.
@@ -133,6 +133,20 @@ Uden disse virker appen stadig — så står der "Egen mail" ved invitationen, s
 - **Overskud pr. md.** = alle aktive indtægter − udgifter (normaliseret pr. måned). **Årets resultat** vises både normaliseret (×12) og som *faktiske* betalinger i kalenderåret.
 - **Likviditet** simulerer saldoen betaling for betaling — ikke bare månedstotaler — så man ser hvis kontoen går i minus den 1., selvom lønnen kommer den 25. Beregnes i hele øre (ingen afrundingsfejl). Samme dag: indtægter før udgifter (som bankerne gør med faste overførsler og Betalingsservice). Betalinger med betalingsdag i dag eller tidligere i indeværende måned regnes som allerede trukket.
 - **Budgetkonto "Bør stå":** for hver udgift på kontoen: beløb × (frekvens − måneder til næste betaling) ÷ frekvens. Forudsætter at den månedlige overførsel lander den 1. Eksempel: årlig forsikring på 1.200 kr. betalt i marts → i september bør der stå 600 kr. Appen viser overskud/manko og den anbefalede månedlige overførsel.
+
+## Nyt i version 7
+- **"Tilbage af lønnen"** = løn minus alt, der faktisk trækkes eller overføres fra lønkontoen. Overføres der for lidt til fx Budgetkontoen, står pengene stadig på lønkontoen — og Budgetkontoens manko vises med rødt for sig (også på person-kortene: "Mangler at overføre").
+- **Bank:** rettet fortegn for banker, der skriver minus foran beløbet i stedet for ind/ud-markering (fx Sparekassen Danmark). Kontoen selv regnes ikke længere som "mellem egne konti". Ud = rødt med minus, ind = grønt med plus. Første hentning efter opdateringen henter alt igen (op til 12 mdr.).
+- **Bank-fanen har under-faner:** Oversigt (varsler, konti, plan og virkelighed) · Forbrug (kategorier + månedsopsummering) · Faste træk (abonnementer og prisstigninger) · Posteringer (fra–til, hurtigknapper, søgning, sum og antal, og hvor langt tilbage banken gav data).
+- **Automatisk kategorisering** af posteringer. Retter man en kategori, huskes det for alle posteringer fra samme modtager (gemmes i `settings.txRules`).
+- **Varsler:** lav saldo snart, regninger med andet beløb, betalinger der mangler, bankadgang der udløber, prisstigninger.
+- **Faner:** Budget · Bank · Bilag (kvitteringer + dokumenter) · Likviditet · Admin.
+- **Én "＋ Tilføj"-knap** med tre valg (fast knap nederst til højre på telefonen). Forklaring under hver gruppe.
+- **⏸ Pause** fra–til på poster. **"Sidste dag i måneden"** som valg. **Bankdage** (weekend/helligdage) — kan slås fra under Admin → Budgetter.
+- **✨/🧩-knap** øverst for simpel/udvidet visning, og et forslag om simpel visning første gang.
+- **Skjul bokse** (gul/rød kontoboks, Hvem betaler hvad) for den enkelte — vis igen under Admin → Udseende. "Hvem betaler hvad" skjuler sig selv, når der kun er én person og intet fælles.
+- **Konti uden poster** har en knap: "Tilføj fast overførsel hertil".
+- **Opdatering:** ny Worker-kode + upload af alle filer. Ingen nye Firestore-regler (siden version 6).
 
 ## Nyt i version 6
 - **🏦 Bank-fane (Enable Banking).** Saldo og posteringer hentes direkte fra banken. Kun læseadgang — appen kan aldrig flytte penge. Slås til pr. budget under Admin → Budgetter.

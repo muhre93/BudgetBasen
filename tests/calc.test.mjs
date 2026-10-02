@@ -298,4 +298,37 @@ t('du kan bruge: 26.000 på kontoen', () => {
   assert.equal(r3.canSpend, 4000, 'laveste punkt 4.000 = det man kan bruge');
   assert.equal(spendable(tight, 'B', 30000, D(2026, 9, 30), { buffer: 1000 }).canSpend, 3000, 'med buffer');
 });
+
+import { setBankDays, isBankDay, bankHolidays, isPaused, countsInBudget as cib, paysIn as pIn, summarize as sum2 } from '../js/calc.js';
+t('tilbage af lønnen: overfører for lidt → pengene er stadig på lønkontoen', () => {
+  const two = [MIKE[0], { ...MIKE[1], amount: 2000 }, MIKE[2]];
+  const s = sum2(two, D(2026, 9, 30));
+  close(s.left, 27400, '29.400 − 2.000'); close(s.shortage, 5321, 'budgetkontoen mangler');
+  const ps = personSummary(two, { jointAccounts: [], people: ['Mike'], today: D(2026, 9, 30) });
+  close(ps.persons[0].left, 27400, 'person'); close(ps.persons[0].parked, -5321, 'mangler at overføre');
+  close(sum2(MIKE, D(2026, 9, 30)).left, 6400, 'overfører for meget → 6.400 som før');
+});
+t('pause: tæller ikke med i pauseperioden', () => {
+  const it = { type: 'expense', name: 'Institution', amount: 3000, freq: 1, payDay: 1, account: 'B', pause: { from: '2026-07', to: '2026-07' } };
+  assert.equal(isPaused(it, 2026 * 12 + 6), true); assert.equal(pIn(it, 2026 * 12 + 6), false);
+  assert.equal(pIn(it, 2026 * 12 + 7), true);
+  assert.equal(cib({ ...it, pause: { from: '2026-09', to: null } }, 2026 * 12 + 9), false, 'indtil videre');
+});
+t('sidste dag i måneden (31)', () => {
+  const it = { type: 'expense', payDay: 31 };
+  assert.equal(payDayIn(it, 2026 * 12 + 1), 28); assert.equal(payDayIn(it, 2028 * 12 + 1), 29); assert.equal(payDayIn(it, 2026 * 12 + 3), 30);
+});
+t('bankdage: weekend og helligdage', () => {
+  assert.ok(bankHolidays(2027).has('3-26'), 'langfredag 2027'); assert.ok(bankHolidays(2026).has('5-14'), 'Kr. himmelfart 2026');
+  assert.equal(isBankDay(new Date(2026, 11, 24)), false, 'juleaften');
+  setBankDays(true);
+  // 1. nov. 2026 er en søndag → regning trækkes mandag den 2.
+  assert.equal(payDayIn({ type: 'expense', payDay: 1 }, 2026 * 12 + 10), 2);
+  // løn den 31. okt. 2026 (lørdag) → fredag den 30.
+  assert.equal(payDayIn({ type: 'income', payDay: 31 }, 2026 * 12 + 9), 30);
+  // 31. jan. 2027 er søndag; ingen bankdag efter i måneden → fredag den 29.
+  assert.equal(payDayIn({ type: 'expense', payDay: 31 }, 2027 * 12), 29);
+  setBankDays(false);
+  assert.equal(payDayIn({ type: 'expense', payDay: 1 }, 2026 * 12 + 10), 1, 'slået fra');
+});
 console.log(`${passed} tests bestået i alt.`);

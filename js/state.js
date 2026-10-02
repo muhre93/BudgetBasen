@@ -96,7 +96,7 @@ export function savingsAccounts() {
   return Array.isArray(s) ? s : ['Opsparingskonto'];
 }
 export const TYPE_LABEL = { income: 'Indtægt', expense: 'Udgift', transfer: 'Overførsel' };
-export const TYPE_PLURAL = { income: 'Indtægter', expense: 'Udgifter', transfer: 'Opsparing & overførsler' };
+export const TYPE_PLURAL = { income: 'Indtægter', expense: 'Udgifter', transfer: 'Opsparing og overførsler' };
 
 // ---------- Simpel event-bus ----------
 const listeners = new Set();

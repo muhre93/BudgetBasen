@@ -1,8 +1,8 @@
 // Budget-fanen: nøgletal i hverdagssprog, hvem betaler hvad, kontosaldo og alle poster med filter.
 // Skallen (søgefelt, filtre, knapper) bygges én gang; kun tal og liste opdateres,
 // så tastaturet ikke lukker, mens man søger.
-import { isSimple } from '../prefs.js';
-import { getConfig, SECTIONS } from '../config.js';
+import { isSimple, getPrefs, setPrefs } from '../prefs.js';
+import { getConfig, SECTIONS, feature } from '../config.js';
 import { renderSimple } from './simple.js';
 import { state, canEdit, lists, jointAccounts, savingsAccounts, isShared, visibilityLabel, defaultVisibleTo, TYPE_PLURAL, TYPE_LABEL } from '../state.js';
 import {
@@ -11,7 +11,7 @@ import {
 } from '../ui.js';
 import {
   monthly, summarize, calendarYear, requiredBalance, nextPayment, freqLabel, countsInBudget, dateToIndex, ymToIndex,
-  indexToYm, paysIn, personSummary, shareOf, touchesAccount, isTransfer, accountFunding, spendable, upcomingPayments,
+  indexToYm, paysIn, personSummary, shareOf, touchesAccount, isTransfer, accountFunding, spendable, upcomingPayments, isPaused, bankDaysOn,
 } from '../calc.js';
 import { saveItem, deleteItem, saveBalances, budgetRef } from '../data.js';
 import { updateDoc, serverTimestamp } from '../firebase.js';
@@ -49,6 +49,8 @@ function buildShell(root, L, key) {
   root.dataset.shell = key;
   const months = Array.from({ length: 12 }, (_, i) => indexToYm(dateToIndex(new Date()) + i));
   root.innerHTML = `<div class="view-wrap">
+    <div id="b-simple-hint">${!lsGet('bb:simpleHint', false) && feature('simple') ? `<div class="simple-hint glass"><span>✨ <b>Er det lidt meget på én gang?</b> Prøv simpel visning — kun de vigtigste tal, og "Tilføj" spørger om én ting ad gangen. Du kan altid skifte med knappen øverst.</span>
+      <span class="btn-row"><button class="btn small primary" data-act="try-simple">Prøv simpel visning</button><button class="hide-x" data-act="no-simple" aria-label="Luk">✕</button></span></div>` : ''}</div>
     <section class="acct-view" id="b-view"></section>
     <section class="kpis" id="b-kpis"></section>
     <section class="funding" id="b-funding"></section>
@@ -73,16 +75,15 @@ function buildShell(root, L, key) {
         <div class="filter-foot"><button type="button" class="btn small ghost" id="b-freset">Nulstil filtre</button></div>
       </div>
       <div class="toolbar-row actions">
-        ${canEdit() ? `<button class="btn primary" data-act="add-expense">${ICON.plus}Udgift</button>
-        <button class="btn success" data-act="add-income">${ICON.plus}Indtægt</button>
-        <button class="btn ghost" data-act="add-transfer" title="Fx fast opsparing eller overførsel til budgetkontoen">${ICON.transfer}Overførsel</button>` : ''}
+        ${canEdit() ? `<button class="btn primary" data-act="add">${ICON.plus}Tilføj</button>` : ''}
         <span class="spacer"></span>
         <button class="btn ghost" data-act="compare" title="Se hvad der har ændret sig">${ICON.compare}<span class="hide-sm">Sammenlign</span></button>
         ${canEdit() ? `<button class="btn ghost" data-act="snapshot" title="Gem hvordan budgettet ser ud lige nu">${ICON.save}<span class="hide-sm">Gem version</span></button>` : ''}
         <button class="btn ghost" data-act="share" title="Hent som PDF/Excel, udskriv eller del med banken">${ICON.share}Hent / del</button>
       </div>
     </section>
-    <div id="b-results"></div></div>`;
+    <div id="b-results"></div>
+    ${canEdit() ? `<button class="fab" data-act="add" aria-label="Tilføj indtægt, udgift eller overførsel">${ICON.plus}<span>Tilføj</span></button>` : ''}</div>`;
   const w = root.firstElementChild;
 
   // Filterfelter: sæt værdier og lyt — opdaterer kun resultatet
@@ -109,6 +110,12 @@ function buildShell(root, L, key) {
     if (act === 'share') openShareDialog();
     if (act === 'compare') openCompareDialog();
     if (act === 'snapshot') openSaveSnapshot();
+    if (act === 'add') openAddChooser();
+    if (act === 'add-to-acc') { const acc = e.target.closest('[data-acc]').dataset.acc; openItemModal({ type: 'transfer', name: `Til ${acc}`, amount: '', freq: 1, payDay: 1, account: guessSalaryAccount(acc), toAccount: acc, active: true, startMonth: currentYm(), visibleTo: defaultVisibleTo() }); }
+    if (act === 'try-simple') { lsSet('bb:simpleHint', true); setPrefs({ simple: true }); }
+    if (act === 'no-simple') { lsSet('bb:simpleHint', true); root.querySelector('#b-simple-hint').innerHTML = ''; }
+    const hb = e.target.closest('[data-hide-box]');
+    if (hb) { setPrefs({ hidden: [...new Set([...(getPrefs().hidden || []), hb.dataset.hideBox])] }); toast('Boksen er skjult. Du kan vise den igen under Admin → Udseende.'); }
     if (act === 'balances') openBalancesModal();
     if (act === 'joint') openJointModal();
     const it = e.target.closest('[data-item]');
@@ -138,10 +145,12 @@ function viewAccounts(L) {
 
 /** Rækkefølge og skjulte kasser fra Ejer-admin. */
 function applyLayout(root) {
-  const { order, hidden } = getConfig().layout;
+  const { order } = getConfig().layout;
+  const hidden = [...getConfig().layout.hidden, ...(getPrefs().hidden || [])];
   const w = root.firstElementChild;
   const listPos = order.indexOf('list');
   for (const el of w.children) {
+    if (el.id === 'b-simple-hint') { el.style.order = '-1'; continue; }
     const sec = SECTIONS.find((x) => x.el && el.matches(x.el));
     const id = sec ? sec.id : 'list';
     el.style.order = String(id === 'list' ? listPos : order.indexOf(id));
@@ -176,7 +185,7 @@ function update(root) {
       ${kpi('Indtægter hver måned', kr(sum.income), 'pos', 'in', `${kr(sum.yearIncome, false)} om året`)}
       ${kpi('Udgifter hver måned', kr(sum.expense), 'neg', 'out', `${kr(sum.yearExpense, false)} om året`)}
       ${kpi('Opsparing hver måned', kr(sum.saving), 'save', 'saving', `${kr(sum.yearSaving, false)} om året`)}
-      ${kpi('Tilbage af lønnen', kr(sum.left), sum.left >= 0 ? 'pos' : 'neg', 'left', sum.excess > 0.5 ? `Til forbrug · ${kr(sum.excess, false)} ekstra står på ${sum.funding.filter((f) => f.excess > 0.5).map((f) => f.account).join(' og ')}` : `${sum.left >= 0 ? '🟢 Der er penge tilovers' : '🔴 Der går flere penge ud end ind'} · ${kr(sum.yearLeft, false)} om året`)}`;
+      ${kpi('Tilbage af lønnen', kr(sum.left), sum.left >= 0 ? 'pos' : 'neg', 'left', sum.shortage > 0.5 ? `Til forbrug · 🔴 ${sum.funding.filter((f) => f.diff < -0.5).map((f) => f.account).join(' og ')} mangler ${kr(sum.shortage, false)}/md.` : sum.excess > 0.5 ? `Til forbrug · ${kr(sum.excess, false)} ekstra står på ${sum.funding.filter((f) => f.excess > 0.5).map((f) => f.account).join(' og ')}` : `${sum.left >= 0 ? '🟢 Der er penge tilovers' : '🔴 Der går flere penge ud end ind'} · ${kr(sum.yearLeft, false)} om året`)}`;
   } else if (isSav) {
     const now = Number(bal?.amount) || 0;
     q('#b-kpis').innerHTML = `
@@ -192,7 +201,7 @@ function update(root) {
       ${kpi('Står på kontoen nu', bal ? kr(bal.amount) : '–', 'acct', 'budgetkonto', bal ? `skrevet ${fmtDate(bal.date)}` : 'skriv saldoen nedenfor')}`;
   }
   const funding = accountFunding(allItems, { savingsAccounts: savingsAccounts(), today }).filter((f) => !ui.view || f.account === ui.view);
-  q('#b-funding').innerHTML = funding.map(fundingLine).join('');
+  q('#b-funding').innerHTML = funding.length ? `<div class="fund-wrap">${funding.map(fundingLine).join('')}${hideBtn('funding')}</div>` : '';
   q('#b-persons').innerHTML = ui.view ? '' : personsHtml(allItems, L);
   q('#b-balances').innerHTML = balancesHtml(allItems, today, ui.view);
 
@@ -238,6 +247,9 @@ function personsHtml(items, L) {
   const js = state.budget.settings?.jointSplit;
   const showJoint = state.budget.settings?.showJoint !== false;
   const s = personSummary(items, { jointAccounts: showJoint ? jointAccounts() : [], jointSplit: js, people, savingsAccounts: savingsAccounts() });
+  // Kun én person med penge ind eller ud, og intet fælles → boksen giver ingen mening
+  const activePeople = s.persons.filter((p) => p.income > 0.5 || p.totalOut > 0.5 || p.saving > 0.5);
+  if (activePeople.length <= 1 && s.joint.expense + s.joint.saving < 0.5) return '';
   const cards = s.persons.map((p) => `
     <button class="person-card glass" data-person-card="${esc(p.name)}" title="Vis ${esc(p.name)}s poster">
       <div class="pc-name">${esc(p.name)}</div>
@@ -247,6 +259,7 @@ function personsHtml(items, L) {
         ${showJoint || p.jointContribution > 0.5 ? `<div><span>${showJoint ? "Til fælles" : "Delte regninger"} (${Math.round((p.jointContribution / (s.joint.need || 1)) * 100) || 0} %)</span><span>${kr(p.jointContribution, false)}</span></div>` : ''}
         ${p.saving ? `<div><span>Opsparing</span><span>${kr(p.saving, false)}</span></div>` : ''}
         ${p.parked > 0.5 ? `<div class="warn-line"><span>Overført ekstra</span><span>${kr(p.parked, false)}</span></div>` : ''}
+        ${p.parked < -0.5 ? `<div class="warn-line neg"><span>Mangler at overføre</span><span>${kr(-p.parked, false)}</span></div>` : ''}
         <div class="sep"><span>Indtægter</span><span>${kr(p.income, false)}</span></div>
         <div class="${p.left >= 0 ? 'pos' : 'neg'}"><span>Tilbage til sig selv</span><b>${kr(p.left, false)}</b></div>
       </div>
@@ -263,7 +276,7 @@ function personsHtml(items, L) {
       ${canEdit() ? '<button class="btn small ghost" data-act="joint">Ret fordeling / fælleskonti</button>' : ''}
     </div>`;
   return `<div class="section-title"><h2>Hvem betaler hvad ${helpBtn('persons')}</h2>
-      <span class="st-actions"><span class="muted small">Tryk på en person for at se deres poster</span>${!showJoint && canEdit() ? '<button class="btn small ghost" data-act="joint">Fælles-indstillinger</button>' : ''}</span></div>
+      <span class="st-actions"><span class="muted small">Tryk på en person for at se deres poster</span>${!showJoint && canEdit() ? '<button class="btn small ghost" data-act="joint">Fælles-indstillinger</button>' : ''}${hideBtn('persons')}</span></div>
     <div class="person-grid">${cards}${showJoint ? joint : ''}</div>`;
 }
 
@@ -311,7 +324,7 @@ function balancesHtml(items, today, only = '') {
     const touches = items.some((i) => i.active !== false && touchesAccount(i, b.account));
     const sp = touches ? spendable(items, b.account, Number(b.amount) || 0, today) : null;
     let status;
-    if (!sp) status = '<div class="bal-status muted small">Der er ingen poster på denne konto endnu</div>';
+    if (!sp) status = `<div class="bal-status muted small"><span>Der er ingen poster på denne konto endnu</span>${canEdit() ? `<button class="btn small ghost" data-act="add-to-acc" data-acc="${esc(b.account)}">＋ Tilføj fast overførsel hertil</button>` : ''}</div>`;
     else if (sp.missing > 0) {
       status = `<div class="bal-status neg"><span>🔴 Der mangler ${kr(sp.missing)} den ${fmtDate(sp.missingDate)}</span>
         <span class="muted small">Sæt penge ind inden da, eller hæv den faste overførsel.</span></div>`;
@@ -377,7 +390,7 @@ function filterItems(items, today) {
   const f = ui.f;
   const min = parseAmount(f.min), max = parseAmount(f.max);
   return items.filter((it) => {
-    const active = countsInBudget(it, now);
+    const active = countsInBudget(it, now) || (it.active !== false && isPaused(it, now)); // pause vises stadig i listen
     if (f.status === 'active' && !active) return false;
     if (f.status === 'inactive' && active) return false;
     if (f.type !== 'all' && it.type !== f.type) return false;
@@ -429,7 +442,8 @@ function groupsHtml(items, today, L) {
         headAmt = `opsparing ${kr(saving, false)} · flyttes ${kr(typeTotal - saving, false)} / md.`;
       }
     }
-    out.push(`<h2 class="type-head ${type}">${TYPE_PLURAL[type]}<span>${headAmt}</span></h2>`);
+    out.push(`<h2 class="type-head ${type}">${TYPE_PLURAL[type]}<span>${headAmt}</span></h2>
+      <p class="type-explain muted small">${TYPE_EXPLAIN[type]}</p>`);
     for (const c of cats) {
       const its = byCat.get(c).sort((a, b) => monthly(b) - monthly(a));
       const tot = its.reduce((s, i) => s + (countsInBudget(i, dateToIndex(today)) ? monthly(i) : 0), 0);
@@ -443,23 +457,50 @@ function groupsHtml(items, today, L) {
   return out.join('');
 }
 
+function guessSalaryAccount(not) {
+  const inc = state.items.filter((i) => i.type === 'income' && i.account && i.account !== not).map((i) => i.account);
+  return inc[0] || lists().accounts.find((a) => a !== not && /løn/i.test(a)) || lists().accounts.find((a) => a !== not) || '';
+}
+export function openAddChooser() {
+  const m = openModal({
+    title: 'Hvad vil du tilføje?',
+    body: `<div class="add-choices">
+      <button type="button" class="add-opt income" data-t="income"><span class="ao-ico">💰</span><span><b>Indtægt</b><small>Penge der kommer ind — fx løn eller børnepenge</small></span></button>
+      <button type="button" class="add-opt expense" data-t="expense"><span class="ao-ico">🧾</span><span><b>Udgift</b><small>En regning — fx husleje, forsikring eller mobil</small></span></button>
+      <button type="button" class="add-opt transfer" data-t="transfer"><span class="ao-ico">🔁</span><span><b>Opsparing eller overførsel</b><small>Penge du flytter mellem dine egne konti — fx fast opsparing eller til budgetkontoen</small></span></button>
+    </div>`,
+    onOpen: (f) => f.querySelectorAll('[data-t]').forEach((b) => (b.onclick = () => { m.close(); setTimeout(() => openItemModal(null, b.dataset.t), 180); })),
+  });
+}
+const hideBtn = (id) => `<button type="button" class="hide-x" data-hide-box="${id}" title="Skjul denne boks (kun for dig — kan vises igen under Admin → Udseende)" aria-label="Skjul boksen">✕</button>`;
+const TYPE_EXPLAIN = {
+  income: '💰 Penge der kommer ind, fx løn og børnepenge.',
+  expense: '🧾 Regninger og faste udgifter, der trækkes fra en konto.',
+  transfer: '🔁 Penge I flytter mellem jeres egne konti: fast opsparing og overførsler til fx budgetkontoen.',
+};
 function splitText(it) {
   const s = shareOf(it, jointAccounts());
   if (s.joint) return 'Fælles';
   return Object.entries(s.parts).map(([n, a]) => (Object.keys(s.parts).length > 1 ? `${n} ${Math.round((a / (monthly(it) || 1)) * 100)} %` : n)).join(' · ');
 }
+function pauseText(it) {
+  const p = it.pause;
+  if (!p?.from) return '';
+  return p.to ? `På pause til og med ${fmtYm(p.to)}` : 'På pause indtil videre';
+}
 function itemRow(it, today, L) {
+  const paused = isPaused(it, dateToIndex(today));
   const inactive = !countsInBudget(it, dateToIndex(today));
   const np = inactive ? null : nextPayment(it, today);
   const meta = [
     isTransfer(it) ? `${it.account || '?'} → ${it.toAccount || '?'}` : splitText(it), isTransfer(it) ? '' : it.supplier, isTransfer(it) ? '' : it.account,
     freqLabel(it.freq, L.frequencies),
-    np ? `næste ${np.day}. ${fmtYm(np.ym)}` : inactive ? 'stoppet' : '',
+    np ? `næste ${np.day}. ${fmtYm(np.ym)}` : paused ? '' : inactive ? 'stoppet' : '',
   ].filter(Boolean).map(esc).join(' · ');
   const dir = ui.view && isTransfer(it) ? (it.toAccount === ui.view ? 'in' : 'out') : '';
-  return `<button class="item ${inactive ? 'inactive' : ''} ${it.type} ${dir}" data-item="${it.id}">
+  return `<button class="item ${inactive ? 'inactive' : ''} ${paused ? 'paused' : ''} ${it.type} ${dir}" data-item="${it.id}">
     <div class="item-main">
-      <div class="item-name">${esc(it.name)} ${!isShared(it) ? `<span class="vis-tag">${ICON.lock}${esc(visibilityLabel(it))}</span>` : ''}</div>
+      <div class="item-name">${esc(it.name)} ${!isShared(it) ? `<span class="vis-tag">${ICON.lock}${esc(visibilityLabel(it))}</span>` : ''}${paused ? `<span class="pause-tag">⏸ ${esc(pauseText(it))}</span>` : ''}</div>
       <div class="item-meta">${meta}</div>
       ${it.note ? `<div class="item-note">${esc(it.note)}</div>` : ''}
     </div>
@@ -516,10 +557,15 @@ export function openItemModal(item = null, type = 'expense') {
       <h3 class="fgroup-title">Hvornår</h3>
       <div class="pair">
         <label>Første gang (måned)<input type="month" name="startMonth" value="${esc(it.startMonth || '')}" required></label>
-        <label>Dag i måneden<input type="number" name="payDay" min="1" max="31" inputmode="numeric" value="${esc(it.payDay || 1)}" required></label>
+        <label>Dag i måneden<select name="payDay">${Array.from({ length: 30 }, (_, i) => `<option value="${i + 1}" ${Number(it.payDay || 1) === i + 1 ? 'selected' : ''}>Den ${i + 1}.</option>`).join('')}<option value="31" ${Number(it.payDay) >= 31 ? 'selected' : ''}>Sidste dag i måneden</option></select></label>
       </div>
       <p class="next-pay" id="next-pay"></p>
       <label>Stopper (valgfri)<input type="month" name="endMonth" value="${esc(it.endMonth || '')}"></label>
+      <label class="check big-check pause-toggle"><input type="checkbox" name="paused" ${it.pause?.from ? 'checked' : ''}> <span>⏸ <b>Sæt på pause</b> <span class="muted small">— fx sommerferie i institutionen. Posten bliver liggende, men tæller ikke med i pausen.</span></span></label>
+      <div class="pair pause-fields ${it.pause?.from ? '' : 'hidden'}">
+        <label>Pause fra<input type="month" name="pauseFrom" value="${esc(it.pause?.from || currentYm())}"></label>
+        <label>Til og med (tom = indtil videre)<input type="month" name="pauseTo" value="${esc(it.pause?.to || '')}"></label>
+      </div>
     </section>
 
     <section class="fgroup">
@@ -597,11 +643,14 @@ export function openItemModal(item = null, type = 'expense') {
 
         // Næste betalinger
         const np = form.querySelector('#next-pay');
-        const draft = { freq: f, startMonth: form.startMonth.value, payDay: Number(form.payDay.value) || 1, endMonth: form.endMonth.value || null, active: true };
+        const pauseOn = form.paused.checked;
+        form.querySelector('.pause-fields').classList.toggle('hidden', !pauseOn);
+        const draft = { type, freq: f, startMonth: form.startMonth.value, payDay: Number(form.payDay.value) || 1, endMonth: form.endMonth.value || null, active: true,
+          pause: pauseOn && form.pauseFrom.value ? { from: form.pauseFrom.value, to: form.pauseTo.value || null } : null };
         const next = form.startMonth.value ? upcomingPayments(draft, new Date(), 3) : [];
         np.innerHTML = next.length
-          ? `📅 Næste gang: <b>${shortDate(next[0])}</b>${next.length > 1 ? `, derefter ${next.slice(1).map(shortDate).join(' og ')}` : ''}${Number(form.payDay.value) > 28 ? '<br><span class="muted small">I korte måneder bruges den sidste dag i måneden.</span>' : ''}`
-          : (form.endMonth.value ? '⚠ Posten er stoppet — der kommer ikke flere betalinger.' : '');
+          ? `📅 Næste gang: <b>${shortDate(next[0])}</b>${next.length > 1 ? `, derefter ${next.slice(1).map(shortDate).join(' og ')}` : ''}${Number(form.payDay.value) >= 31 ? '<br><span class="muted small">Altid den sidste dag — også i korte måneder.</span>' : Number(form.payDay.value) > 28 ? '<br><span class="muted small">I korte måneder bruges den sidste dag i måneden.</span>' : ''}${bankDaysOn() ? `<br><span class="muted small">Falder dagen i en weekend eller på en helligdag, ${type === 'income' ? 'kommer pengene bankdagen før' : 'trækkes den næste bankdag'}.</span>` : ''}`
+          : pauseOn ? '⏸ Posten er på pause — der kommer ingen betalinger, før pausen slutter.' : (form.endMonth.value ? '⚠ Posten er stoppet — der kommer ikke flere betalinger.' : '');
 
         // Overførsel: forklaring og passer/for meget/mangler for til-kontoen
         const info = form.querySelector('[data-transfer-info]');
@@ -640,6 +689,12 @@ export function openItemModal(item = null, type = 'expense') {
       const endMonth = fd.get('endMonth') || null;
       if (endMonth && ymToIndex(endMonth) < ymToIndex(startMonth)) { toast('Stop-måneden ligger før første betaling', 'error'); return false; }
       const typ = fd.get('type');
+      let pause = null;
+      if (fd.get('paused') === 'on') {
+        const pf = fd.get('pauseFrom') || currentYm(), pt = fd.get('pauseTo') || null;
+        if (pt && ymToIndex(pt) < ymToIndex(pf)) { toast('Pausen slutter før den begynder', 'error'); return false; }
+        pause = { from: pf, to: pt };
+      }
       if (typ === 'transfer') {
         if (!fd.get('account') || !fd.get('toAccount')) { toast('Vælg både fra- og til-konto', 'error'); return false; }
         if (fd.get('account') === fd.get('toAccount')) { toast('Fra- og til-konto skal være forskellige', 'error'); return false; }
@@ -656,7 +711,7 @@ export function openItemModal(item = null, type = 'expense') {
         method: typ === 'expense' ? fd.get('method') || '' : typ === 'transfer' ? 'Overførsel' : '',
         account: fd.get('account') || '', toAccount: typ === 'transfer' ? fd.get('toAccount') || '' : null,
         note: String(fd.get('note') || '').trim(),
-        active: fd.get('active') === 'on', split, visibleTo: readVisibility(form),
+        active: fd.get('active') === 'on', split, visibleTo: readVisibility(form), pause,
       };
       await saveItem(editing ? it.id : null, data, it);
       toast(editing ? 'Ændringer gemt — den gamle værdi ligger i historikken' : `${TYPE_LABEL[data.type]} tilføjet`);

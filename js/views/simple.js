@@ -107,12 +107,12 @@ export function openWizard() {
       <div class="wz-list">${[1, 3, 6, 12].map((f) => `<button type="button" class="wz-opt row ${d.freq === f ? 'on' : ''}" data-v="${f}"><b>${freqTxt(f)[0].toUpperCase() + freqTxt(f).slice(1)}</b></button>`).join('')}</div>`;
     if (s === 'when') return `<p class="wz-q">Hvornår ${d.type === 'income' ? 'kommer pengene' : 'skal den betales'}${d.freq > 1 ? ' næste gang' : ''}?</p>
       ${d.freq > 1 ? `<label>Måned<select id="wz-month">${monthsAhead.map((m) => `<option value="${m}" ${m === d.month ? 'selected' : ''}>${MONTHS[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}</option>`).join('')}</select></label>` : ''}
-      <label>Dag i måneden<input id="wz-day" class="wz-input" type="number" min="1" max="31" inputmode="numeric" value="${d.day}"></label>
+      <label>Dag i måneden<select id="wz-day" class="wz-input">${Array.from({ length: 30 }, (_, i) => `<option value="${i + 1}" ${d.day === i + 1 ? 'selected' : ''}>Den ${i + 1}.</option>`).join('')}<option value="31" ${d.day >= 31 ? 'selected' : ''}>Sidste dag i måneden</option></select></label>
       <p class="muted small">Ved du det ikke præcist, så vælg den 1.</p>`;
     const amt = parseAmount(d.amount);
     return `<p class="wz-q">Ser det rigtigt ud?</p>
       <div class="wz-summary"><b>${esc(d.name)}</b><span>${kr(amt, false)} ${freqTxt(d.freq)}</span>
-      <span class="muted">${d.freq > 1 ? `Næste gang: ${d.day}. ${MONTHS[Number(d.month.slice(5)) - 1]} ${d.month.slice(0, 4)}` : `Den ${d.day}. hver måned`}</span>
+      <span class="muted">${d.freq > 1 ? `Næste gang: ${d.day >= 31 ? 'sidste dag i' : `${d.day}.`} ${MONTHS[Number(d.month.slice(5)) - 1]} ${d.month.slice(0, 4)}` : d.day >= 31 ? 'Den sidste dag hver måned' : `Den ${d.day}. hver måned`}</span>
       ${d.freq > 1 ? `<span class="muted small">Det svarer til ${kr(amt / d.freq, false)} om måneden.</span>` : ''}</div>`;
   };
 

@@ -233,7 +233,7 @@ export async function reportToPdf(r) {
       for (const i of s.items) rows.push([i.note && o.note ? `${i.name}\n${i.note}` : i.name, ...extra.map(([, k]) => i[k] || ''), i.freqLabel, pdfKr(i.amount), pdfKr(i.monthly)]);
     }
     const total = secs.reduce((a, s) => a + s.total, 0);
-    sections.push({ heading: { income: 'Indtægter', expense: 'Udgifter', transfer: 'Opsparing & overførsler' }[type], columns, rows, catRows, foot: ['I alt pr. måned', ...extra.map(() => ''), '', '', pdfKr(total)] });
+    sections.push({ heading: { income: 'Indtægter', expense: 'Udgifter', transfer: 'Opsparing og overførsler' }[type], columns, rows, catRows, foot: ['I alt pr. måned', ...extra.map(() => ''), '', '', pdfKr(total)] });
   }
   if (r.cashflow) sections.push(cashflowSection(r.cashflow));
   await toPdf(safeFile(r.title), {

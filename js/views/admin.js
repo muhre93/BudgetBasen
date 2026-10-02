@@ -67,6 +67,8 @@ function budgets(el, root) {
         <button class="btn ghost" id="ad-dup">Kopiér til nyt budget</button>
         ${isOwner() ? '<button class="btn danger-ghost" id="ad-del">Slet budget permanent</button>' : '<button class="btn danger-ghost" id="ad-leave">Forlad budget</button>'}
       </div>
+      ${isAdmin() ? `<label class="check big-check bank-toggle"><input type="checkbox" id="ad-bankdays" ${state.budget.settings?.bankDays !== false ? 'checked' : ''}>
+        <span>📅 <b>Regn med bankdage</b><br><span class="muted small">Falder en betaling i en weekend eller på en helligdag, trækkes den næste bankdag — og løn kommer bankdagen før. Bruges i Likviditet og "Du kan bruge".</span></span></label>` : ''}
       ${isAdmin() && feature('bank') ? `<label class="check big-check bank-toggle"><input type="checkbox" id="ad-bank" ${state.budget.settings?.bank ? 'checked' : ''}>
         <span>🏦 <b>Vis Bank-fanen i dette budget</b><br><span class="muted small">Så kan medlemmer koble deres bank på og se saldo og posteringer. Hver person vælger selv, hvilke konti der kommer med, og hvem der må se dem. Børn ("Kun læse") ser aldrig bankdata.</span></span></label>` : ''}
     </section>`;
@@ -80,6 +82,9 @@ function budgets(el, root) {
     try { const id = await createDemoBudget(); ui.selectBudget?.(id); } catch (err) { errorToast(err); } finally { e.target.disabled = false; }
   };
   el.querySelector('#ad-guide').onclick = () => showWelcome();
+  el.querySelector('#ad-bankdays')?.addEventListener('change', (e) => {
+    updateBudget({ 'settings.bankDays': e.target.checked }, e.target.checked ? 'Bankdage slået til' : 'Bankdage slået fra').then(() => toast('Gemt')).catch(errorToast);
+  });
   el.querySelector('#ad-bank')?.addEventListener('change', (e) => {
     updateBudget({ 'settings.bank': e.target.checked }, e.target.checked ? 'Bank-fanen slået til' : 'Bank-fanen slået fra')
       .then(() => toast(e.target.checked ? 'Bank-fanen er slået til — du finder den i menuen' : 'Bank-fanen er slået fra'))
@@ -135,13 +140,18 @@ function look(el, root) {
         <label class="check big-check"><input type="radio" name="viewMode" value="full" ${p.simple ? '' : 'checked'}> 🧩 Udvidet — alle tal, filtre og indstillinger</label>
       </div>
       <p class="muted small">Indstillingerne gælder kun for dig og følger med til dine andre enheder. De andre i budgettet vælger selv.</p>
-    </section>`;
+    </section>
+    ${(p.hidden || []).length ? `<section class="glass card">
+      <h2>Skjulte bokse på budgetsiden</h2>
+      <ul class="rows hidden-boxes">${p.hidden.map((h) => `<li><span>${esc({ funding: 'Status for overførsler til konti (gul/rød boks)', persons: 'Hvem betaler hvad' }[h] || h)}</span><button class="btn small ghost" data-unhide="${esc(h)}">Vis igen</button></li>`).join('')}</ul>
+    </section>` : ''}`;
   el.querySelectorAll('[data-theme-pick]').forEach((b) => (b.onclick = async () => {
     const slot = b.dataset.slot;
     await setPrefs({ [slot]: b.dataset.themePick, mode: slot === 'night' ? 'night' : 'day' });
     render(root);
   }));
   el.querySelectorAll('[name=viewMode]').forEach((r) => (r.onchange = () => setPrefs({ simple: r.value === 'simple' })));
+  el.querySelectorAll('[data-unhide]').forEach((b) => (b.onclick = async () => { await setPrefs({ hidden: (getPrefs().hidden || []).filter((x) => x !== b.dataset.unhide) }); render(root); }));
 }
 
 // ---------- Medlemmer ----------

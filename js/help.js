@@ -5,7 +5,7 @@ import { getConfig, feature } from './config.js';
 export const HELP = {
   in: ['Indtægter hver måned', 'Alt det, der kommer ind: løn, børnepenge osv. Kommer noget kun ind en gang om året, deles det ud på 12 måneder, så du kan sammenligne.'],
   out: ['Udgifter hver måned', 'Alle faste regninger omregnet til et månedsbeløb. En forsikring på 1.200 kr. om året tæller som 100 kr. om måneden.'],
-  left: ['Tilbage af lønnen', 'Det der er tilbage af lønnen til forbrug, når regninger, opsparing og faste overførsler er trukket fra. Overfører I mere til fx budgetkontoen, end regningerne koster, samler den ekstra del sig på budgetkontoen — den tælles ikke med her, men står nedenunder, så I kan se den.'],
+  left: ['Tilbage af lønnen', 'Det der faktisk er tilbage af lønnen, når alt det, der trækkes eller overføres fra lønkontoen, er gået ud — regninger, opsparing og faste overførsler til fx budgetkontoen. Overfører I mere til budgetkontoen, end regningerne koster, er de penge stadig taget fra lønnen (de samler sig på budgetkontoen). Overfører I mindre, står de stadig på lønkontoen — men så viser appen med rødt, at budgetkontoen mangler penge.'],
   saving: ['Opsparing', 'Faste overførsler til en opsparingskonto. De trækkes fra "Tilbage af lønnen", fordi pengene er lagt til side. Hvilke konti der er opsparing, vælger du under Admin → Lister.'],
   accountView: ['Vis hele budgettet eller én konto', '"Hele budgettet" viser alt: indtægter, udgifter og opsparing. Vælger du en konto, fx Budgetkonto, ser du kun det, der går ind og ud af netop den konto — inkl. overførsler til og fra den. Opsparing der går fra en anden konto, tæller ikke med her.'],
   acctIn: ['Kommer ind på kontoen', 'Alt det, der sættes ind på kontoen hver måned: løn der går direkte hertil, og overførsler fra jeres andre konti.'],
@@ -20,6 +20,8 @@ export const HELP = {
   freq: ['Hvor ofte', 'Hvor tit regningen betales. Appen regner selv ud, hvad det svarer til om måneden.'],
   bank: ['Bank', 'Her kan saldo og posteringer hentes direkte fra banken gennem Enable Banking, som er godkendt til det. Appen kan kun læse — den kan aldrig flytte penge. Du vælger selv, hvilke konti der kommer med i budgettet, og hvem der må se dem. Kobler du og din partner den samme konto på, genkender appen den som fælles.'],
   bankPlan: ['Plan og virkelighed', 'Appen sammenligner budgettets poster med det, der faktisk er trukket eller kommet ind på kontoen. ✅ betyder trukket som planlagt, ⚠️ at beløbet var anderledes, ❌ at den ikke er fundet i banken, og 🕒 at den kommer senere i måneden. Faste betalinger, der går igen hver måned uden at stå i budgettet, foreslås nederst.'],
+  bankSpend: ['Forbrug pr. kategori', 'Alle udgifter fra jeres bankkonti sorteret i kategorier, fx Dagligvarer og Transport. Overførsler mellem jeres egne konti tæller ikke med. Pilene viser, om I har brugt mere (↑) eller mindre (↓) end måneden før. Tryk på en kategori for at se posteringerne, og tryk på en postering for at flytte den til en anden kategori — så husker appen det.'],
+  bankSubs: ['Faste træk', 'Betalinger, der går igen med samme beløb hver måned, hvert kvartal eller hvert år — fx streaming, forsikring og mobil. 📈 betyder, at prisen er steget siden sidst. Står der "✓ i budgettet", findes den allerede som post i budgettet.'],
   export: ['Hent / del', 'PDF er en færdig side, du kan printe eller sende til banken. Excel er et regneark, hvis du selv vil regne videre på tallene.'],
 };
 

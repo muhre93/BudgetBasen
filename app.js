@@ -12,16 +12,19 @@ import { maybeShowWelcome, setDemoHandler } from './js/help.js';
 import { loadUserPrefs, toggleDayNight, onPrefs, getPrefs, setPrefs, isSimple } from './js/prefs.js';
 import * as budgetView from './js/views/budget.js';
 import * as cashflowView from './js/views/cashflow.js';
-import * as receiptsView from './js/views/receipts.js';
-import * as documentsView from './js/views/documents.js';
+import * as bilagView from './js/views/bilag.js';
 import * as adminView from './js/views/admin.js';
 import { renderPublicShare } from './js/views/share.js';
 import * as bankView from './js/views/bank.js';
 import * as ownerView from './js/views/owner.js';
 import { stashCallback } from './js/bank.js';
 import { startConfig, onConfig, feature, getConfig, isAppOwner } from './js/config.js';
+import { setBankDays } from './js/calc.js';
 
-const VIEWS = { budget: budgetView, cashflow: cashflowView, receipts: receiptsView, documents: documentsView, bank: bankView, admin: adminView, owner: ownerView };
+const VIEWS = { budget: budgetView, bank: bankView, bilag: bilagView, cashflow: cashflowView, admin: adminView, owner: ownerView };
+// Gamle adresser (#receipts / #documents) peger nu på Bilag-fanen
+const OLD = { receipts: 'receipts', documents: 'documents' };
+function mapOld(v) { if (OLD[v]) { bilagView.openSub(OLD[v]); return 'bilag'; } return v; }
 let pendingBankCallback = false;
 
 // ---------- Start ----------
@@ -33,21 +36,26 @@ function initApp() {
   registerServiceWorker();
   pendingBankCallback = stashCallback();
   startConfig();
-  onConfig(() => { applyConfig(); $('#main').dataset.shell = ''; render(); });
+  onConfig(() => { applyConfig(); $('#btn-simple') && $('#btn-simple').classList.toggle('hidden', !feature('simple')); $('#main').dataset.shell = ''; render(); });
   applyConfig();
   $('#btn-login').onclick = login;
   getRedirectResult(auth).catch((e) => e.code !== 'auth/no-auth-event' && errorToast(e));
   adminView.setSelectBudget(selectBudget);
   setDemoHandler(openDemo);
 
-  const hashView = location.hash.slice(1);
-  state.view = pendingBankCallback ? 'bank' : VIEWS[hashView] ? hashView : lsGet('bb:view', 'budget');
+  const hashView = mapOld(location.hash.slice(1));
+  state.view = pendingBankCallback ? 'bank' : VIEWS[hashView] ? hashView : mapOld(lsGet('bb:view', 'budget'));
   $$('#tabs [data-view]').forEach((b) => (b.onclick = () => setView(b.dataset.view)));
-  window.addEventListener('hashchange', () => { const v = location.hash.slice(1); if (VIEWS[v] && v !== state.view) setView(v); });
+  window.addEventListener('hashchange', () => { const v = mapOld(location.hash.slice(1)); if (VIEWS[v] && v !== state.view) setView(v); });
   $('#budget-switch').onchange = (e) => selectBudget(e.target.value);
   $('#btn-user').onclick = userMenu;
   $('#btn-daynight').onclick = () => toggleDayNight();
-  const dn = () => { const n = getPrefs().mode === 'night'; $('#btn-daynight').textContent = n ? '☀️' : '🌙'; $('#btn-daynight').title = n ? 'Skift til dag' : 'Skift til nat'; };
+  $('#btn-simple').onclick = () => { setPrefs({ simple: !isSimple() }); toast(isSimple() ? '✨ Simpel visning — kun det vigtigste' : '🧩 Udvidet visning — alle tal og filtre'); };
+  const dn = () => {
+    const n = getPrefs().mode === 'night'; $('#btn-daynight').textContent = n ? '☀️' : '🌙'; $('#btn-daynight').title = n ? 'Skift til dag' : 'Skift til nat';
+    const sm = isSimple(); $('#btn-simple').textContent = sm ? '🧩' : '✨'; $('#btn-simple').title = sm ? 'Skift til udvidet visning' : 'Skift til simpel visning';
+    $('#btn-simple').classList.toggle('hidden', !feature('simple'));
+  };
   onPrefs(() => { dn(); $('#main').dataset.shell = ''; render(); });
   dn();
   onChange(render);
@@ -171,8 +179,7 @@ function setView(v) {
 
 /** Hvilke faner må vises lige nu (Ejer-admin-funktioner, simpel visning, budgettets bank-indstilling). */
 function viewAllowed(v) {
-  if (v === 'receipts') return feature('receipts');
-  if (v === 'documents') return feature('documents') && !isSimple();
+  if (v === 'bilag') return bilagView.available().length > 0;
   if (v === 'bank') return feature('bank') && state.budget?.settings?.bank === true && canEdit();
   if (v === 'owner') return isAppOwner(state.user);
   return !!VIEWS[v];
@@ -201,6 +208,7 @@ function renderAnnouncement() {
 
 function render() {
   if (!state.user) return;
+  setBankDays(state.budget?.settings?.bankDays !== false);
   renderInvites();
   renderDemoBar();
   renderAnnouncement();

@@ -64,7 +64,7 @@ function resultHtml(r) {
     if (!rows.length) return '';
     const byCat = new Map();
     for (const x of rows) { const c = x.item.category || 'Uden kategori'; if (!byCat.has(c)) byCat.set(c, []); byCat.get(c).push(x); }
-    return `<h3>${{ income: 'Indtægter', expense: 'Udgifter', transfer: 'Opsparing & overførsler' }[type]}</h3>
+    return `<h3>${{ income: 'Indtægter', expense: 'Udgifter', transfer: 'Opsparing og overførsler' }[type]}</h3>
       <table class="cmp-table full"><thead><tr><th>Post</th><th class="num">Før /md.</th><th class="num">Nu /md.</th><th class="num">Forskel</th></tr></thead><tbody>
       ${[...byCat.entries()].sort((a, b) => a[0].localeCompare(b[0], 'da')).map(([cat, xs]) => {
         const b = xs.reduce((s, x) => s + x.before, 0), a = xs.reduce((s, x) => s + x.after, 0);

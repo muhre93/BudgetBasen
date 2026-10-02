@@ -384,7 +384,7 @@ async function bankRoute(path, request, env, url) {
       const q = `date_from=${from}${ck ? `&continuation_key=${encodeURIComponent(ck)}` : ''}`;
       let r;
       try { r = await eb(cfg, 'GET', `/accounts/${encodeURIComponent(acc.uid)}/transactions?${q}`); } catch (e) { throw expired(e, hit); }
-      for (const t of r.transactions || []) txs.push(await normalizeTx(env, t));
+      for (const t of r.transactions || []) txs.push(await normalizeTx(env, t, acc.key));
       ck = r.continuation_key || null;
     } while (ck && ++pages < 25);
     return { key, bank: hit.aspsp.name, validUntil: hit.validUntil, balance: pickBalance(balances.balances || []), transactions: txs, from };
@@ -507,12 +507,15 @@ async function hmacHex(env, label, text, bytes) {
   return [...sig.slice(0, bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 const accountKey = (env, num) => hmacHex(env, 'acct', num, 12);
-async function normalizeTx(env, t) {
-  const debit = t.credit_debit_indicator === 'DBDT';
-  const amt = Math.abs(Number(t.transaction_amount?.amount || 0));
+async function normalizeTx(env, t, ownKey = '') {
+  const raw = Number(t.transaction_amount?.amount || 0);
+  // Nogle banker (fx flere sparekasser) markerer ikke ind/ud, men sætter minus foran beløbet.
+  const debit = t.credit_debit_indicator ? t.credit_debit_indicator === 'DBDT' : raw < 0;
+  const amt = Math.abs(raw);
   const party = debit ? t.creditor : t.debtor;
   const partyAcc = debit ? t.creditor_account : t.debtor_account;
   const partyNum = String(partyAcc?.iban || partyAcc?.other?.identification || '').replace(/\s+/g, '');
+  const partyKey = partyNum ? await accountKey(env, partyNum) : '';
   const text = [...(t.remittance_information || [])].join(' ').replace(/\s+/g, ' ').trim();
   const date = t.booking_date || t.value_date || t.transaction_date || '';
   const base = t.entry_reference || t.transaction_id || '';
@@ -520,7 +523,8 @@ async function normalizeTx(env, t) {
   return {
     id, date, amount: Math.round((debit ? -amt : amt) * 100) / 100, currency: t.transaction_amount?.currency || 'DKK',
     text: (text || party?.name || '').slice(0, 140), party: String(party?.name || '').slice(0, 80),
-    partyKey: partyNum ? await accountKey(env, partyNum) : '', status: t.status || 'BOOK',
+    // Kontoen selv er aldrig "en anden af jeres konti"
+    partyKey: partyKey && partyKey !== ownKey ? partyKey : '', status: t.status || 'BOOK',
   };
 }
 function pickBalance(list) {

@@ -1,21 +1,29 @@
 // Bank-fanen: koble banken på (Enable Banking, kun læseadgang), se saldo og posteringer,
-// og sammenlign budgettet med det, der faktisk skete ("Plan og virkelighed").
-import { state, canEdit, lists, defaultVisibleTo } from '../state.js';
-import { esc, kr, fmtDate, fmtYm, openModal, toast, errorToast, confirmDialog, copyText, currentYm } from '../ui.js';
-import { emit } from '../state.js';
-import { dateToIndex, indexToYm } from '../calc.js';
+// sammenlign med budgettet, forbrug pr. kategori, faste træk og varsler.
+import { state, canEdit, lists, defaultVisibleTo, emit } from '../state.js';
+import { esc, kr, fmtDate, fmtYm, openModal, toast, errorToast, confirmDialog, copyText, currentYm, isoDate, lsGet, lsSet } from '../ui.js';
+import { dateToIndex, indexToYm, spendable } from '../calc.js';
 import { helpBtn } from '../help.js';
 import { isAppOwner } from '../config.js';
 import {
   bankApi, appRedirect, watchBankAccounts, linkAccounts, setBudgetAccount, setVisibility, unlinkAccount,
-  loadMonths, syncAccount, needsSync, takeCallback, rememberBudgetForBank, bankBudget, ADULTS,
+  loadMonths, syncAccount, needsSync, takeCallback, rememberBudgetForBank, bankBudget, ADULTS, txRules, saveTxRule,
 } from '../bank.js';
-import { matchMonth, suggestions } from '../bankmatch.js';
+import { matchMonth, suggestions, tokens } from '../bankmatch.js';
+import { CATEGORIES, CAT, categorize, spendByCategory, monthSummary, recurring, partyKeyOf } from '../categorize.js';
 import { openItemModal } from './budget.js';
 
+const SUBS = [
+  { id: 'overview', label: 'Oversigt' },
+  { id: 'spend', label: 'Forbrug' },
+  { id: 'subs', label: 'Faste træk' },
+  { id: 'tx', label: 'Posteringer' },
+];
 const ui = {
   budgetId: null, accounts: null, status: null, statusErr: null, statusLoading: false,
-  sel: null, ym: currentYm(), q: '', syncing: new Set(), autoTried: new Set(), tx: new Map(),
+  sub: lsGet('bb:bankSub', 'overview'), sel: null, ym: currentYm(), spendYm: currentYm(), openCat: null,
+  q: '', acc: '', from: null, to: null, quick: 'm1',
+  syncing: new Set(), autoTried: new Set(), tx: new Map(),
 };
 
 function ensureWatch() {
@@ -67,24 +75,81 @@ const ago = (ms) => {
   if (m < 48 * 60) return `for ${Math.round(m / 60)} timer siden`;
   return `for ${Math.round(m / 1440)} dage siden`;
 };
+const nowI = () => dateToIndex(new Date());
+const lastMonths = (n) => Array.from({ length: n }, (_, k) => indexToYm(nowI() - k));
+const knownKeys = () => (ui.accounts || []).map((x) => x.id);
+const accName = (id) => ui.accounts?.find((a) => a.id === id)?.name || '';
+
+/** Posteringer for nogle konti og måneder (cache + indlæsning i baggrunden). null = henter. */
+function useTx(accounts, yms) {
+  const key = `${accounts.map((a) => `${a.id}:${(a.months || []).length}:${a.syncedAt || ''}`).join(',')}|${yms.join(',')}`;
+  if (!ui.tx.has(key)) {
+    ui.tx.set(key, null);
+    Promise.all(accounts.map((a) => loadMonths(a, yms).then((l) => l.map((t) => ({ ...t, acct: a.id })))))
+      .then((ls) => { ui.tx.set(key, ls.flat().sort((a, b) => b.date.localeCompare(a.date))); emit(); })
+      .catch((e) => { ui.tx.set(key, []); errorToast(e); });
+  }
+  return ui.tx.get(key);
+}
 
 export function render(root) {
   ensureWatch();
   loadStatus();
   const accounts = ui.accounts;
-  const sel = accounts?.find((a) => a.id === ui.sel) || null;
+  if (!SUBS.some((x) => x.id === ui.sub)) ui.sub = 'overview';
+  const has = accounts && accounts.length > 0;
+  const body = !has || ui.sub === 'overview' ? overviewHtml(accounts) : ui.sub === 'spend' ? spendHtml() : ui.sub === 'subs' ? subsHtml() : txHtml();
   root.innerHTML = `<div class="view-wrap bank-view">
     <section class="glass card bank-intro">
       <div class="section-head"><h2>🏦 Bank ${helpBtn('bank')}</h2>
         ${accounts?.some((a) => a.owners?.includes(state.user.uid)) ? `<button class="btn small ghost" data-b="sync-all" ${ui.syncing.size ? 'disabled' : ''}>${ui.syncing.size ? 'Henter …' : '↻ Hent nyt fra banken'}</button>` : ''}
       </div>
-      <p class="muted small">Saldo og posteringer hentes direkte fra banken. Appen kan <b>kun læse</b> — den kan aldrig flytte penge.</p>
-      ${statusHtml()}
+      ${ui.sub === 'overview' || !has ? `<p class="muted small">Saldo og posteringer hentes direkte fra banken. Appen kan <b>kun læse</b> — den kan aldrig flytte penge.</p>${statusHtml()}` : ''}
     </section>
-    ${accountsHtml(accounts)}
-    ${sel ? planHtml(sel) : ''}
+    ${has ? `<nav class="subtabs glass bank-tabs">${SUBS.map((x) => `<button data-bsub="${x.id}" class="${x.id === ui.sub ? 'active' : ''}">${x.label}</button>`).join('')}</nav>` : ''}
+    ${body}
   </div>`;
   bind(root);
+}
+
+// ---------- Oversigt ----------
+function overviewHtml(accounts) {
+  const sel = accounts?.find((a) => a.id === ui.sel) || null;
+  return `${accounts?.length ? alertsHtml() : ''}${accountsHtml(accounts)}${sel ? planHtml(sel) : ''}`;
+}
+
+function alertsHtml() {
+  const out = [];
+  for (const x of ui.status?.sessions || []) {
+    const d = daysLeft(x.validUntil);
+    if (d !== null && d <= 14) out.push(`<li class="${d <= 0 ? 'neg' : 'warn'}">🔑 ${d <= 0 ? `Adgangen til <b>${esc(x.bank)}</b> er udløbet` : `Adgangen til <b>${esc(x.bank)}</b> udløber om ${d} dage`} — tryk <b>Forny</b> ovenfor.</li>`);
+  }
+  const today = new Date();
+  for (const a of ui.accounts || []) {
+    if (!a.budgetAccount || a.balance == null) continue;
+    const sp = spendable(state.items, a.budgetAccount, a.balance, today);
+    if (sp.missing > 0 && sp.missingDate && (sp.missingDate - today) / 864e5 <= 45) {
+      out.push(`<li class="neg">🔴 <b>${esc(a.name)}</b> mangler ${kr(sp.missing, false)} den ${fmtDate(sp.missingDate)}. Sæt penge ind inden da.</li>`);
+    }
+  }
+  // Regninger med andet beløb i denne måned + prisstigninger (bruger de hentede posteringer)
+  const mapped = (ui.accounts || []).filter((a) => a.budgetAccount);
+  const all = ui.accounts?.length ? useTx(ui.accounts, lastMonths(13)) : [];
+  if (all) {
+    const ym = currentYm();
+    let diffs = 0, missing = 0;
+    for (const a of mapped) {
+      const m = matchMonth(state.items, all.filter((t) => t.acct === a.id), { account: a.budgetAccount, ym, knownKeys: knownKeys() });
+      diffs += m.rows.filter((r) => r.status === 'diff').length;
+      missing += m.rows.filter((r) => r.status === 'missing').length;
+    }
+    if (diffs) out.push(`<li class="warn">⚠️ ${diffs} ${diffs === 1 ? 'regning er' : 'regninger er'} trukket med et andet beløb end i budgettet i ${fmtYm(ym, true)}.</li>`);
+    if (missing) out.push(`<li class="warn">❌ ${missing} ${missing === 1 ? 'betaling er' : 'betalinger er'} ikke fundet i banken endnu i ${fmtYm(ym, true)}.</li>`);
+    const rises = recurring(all, knownKeys()).filter((r) => r.change > 0 && !r.stale && (today - new Date(r.last)) / 864e5 <= 60);
+    for (const r of rises.slice(0, 3)) out.push(`<li class="warn">📈 <b>${esc(r.name)}</b> er steget fra ${kr(r.prevAmount, false)} til ${kr(r.amount, false)}</li>`);
+  }
+  if (!out.length) return '';
+  return `<section class="glass card alerts"><h2>🔔 Det skal du være opmærksom på</h2><ul class="alert-list">${out.join('')}</ul></section>`;
 }
 
 function statusHtml() {
@@ -154,33 +219,35 @@ function accountsHtml(accounts) {
   </section>`;
 }
 
+
 function monthsAround(ym) {
   const i = dateToIndex(new Date(`${ym}-15`));
   return [indexToYm(i - 1), ym, indexToYm(i + 1)];
 }
 
+function txRow(t, { showAcc = false, rules = txRules() } = {}) {
+  const internal = t.partyKey && knownKeys().includes(t.partyKey);
+  const cat = CAT[categorize(t, rules, knownKeys())];
+  const cls = internal ? 'int' : t.amount < 0 ? 'neg' : 'pos';
+  return `<li><span class="tx-date">${fmtDate(t.date).replace(/ \d{4}$/, '')}</span>
+    <span class="tx-text">${esc(t.text || t.party || '—')}${t.party && t.text && !t.text.toLowerCase().includes(t.party.toLowerCase()) ? `<small>${esc(t.party)}</small>` : ''}
+      <span class="tx-tags">${internal ? '<span class="chip int">↔️ mellem egne konti</span>' : `<button type="button" class="chip cat-chip" data-tx-cat="${esc(t.id)}" data-tx-acct="${esc(t.acct || '')}" title="Skift kategori">${cat.icon} ${esc(cat.name)}</button>`}${showAcc && t.acct ? `<span class="chip">${esc(accName(t.acct))}</span>` : ''}${t.status && t.status !== 'BOOK' ? '<span class="chip warn">venter</span>' : ''}</span></span>
+    <span class="tx-amt ${cls}">${t.amount < 0 ? '−' : '+'}${kr(Math.abs(t.amount), false)}</span></li>`;
+}
+
 function planHtml(a) {
-  const nowI = dateToIndex(new Date());
-  const yms = [indexToYm(nowI), indexToYm(nowI - 1), indexToYm(nowI - 2)];
+  const yms = lastMonths(3);
   if (!yms.includes(ui.ym)) ui.ym = yms[0];
-  const need = [...new Set([...monthsAround(ui.ym), indexToYm(nowI - 3), indexToYm(nowI - 2), indexToYm(nowI - 1), indexToYm(nowI)])];
-  const cacheKey = `${a.id}|${need.join(',')}|${(a.months || []).length}|${a.syncedAt || ''}`;
-  if (!ui.tx.has(cacheKey)) {
-    ui.tx.set(cacheKey, null);
-    loadMonths(a, need).then((txs) => { ui.tx.set(cacheKey, txs); emit(); }).catch((e) => { ui.tx.set(cacheKey, []); errorToast(e); });
-  }
-  const all = ui.tx.get(cacheKey);
+  const all = useTx([a], [...new Set([...monthsAround(ui.ym), ...lastMonths(4)])]);
   const chips = `<div class="av-chips">${yms.map((ym) => `<button class="av-chip ${ym === ui.ym ? 'on' : ''}" data-ym="${ym}">${fmtYm(ym, true)}</button>`).join('')}</div>`;
   if (!all) return `<section class="glass card"><h2>${esc(a.name)}</h2>${chips}<p class="muted">Henter posteringer …</p></section>`;
-  const knownKeys = (ui.accounts || []).map((x) => x.id);
-  const monthTx = all.filter((t) => t.date.startsWith(ui.ym));
-
+  const kk = knownKeys();
   let plan = '';
   if (!a.budgetAccount) {
     plan = `<div class="hint">💡 Vælg ovenfor, hvilken konto i budgettet <b>${esc(a.name)}</b> hører til. Så kan appen sammenligne budgettet med det, der faktisk er sket.</div>`;
   } else {
     const around = all.filter((t) => monthsAround(ui.ym).includes(t.date.slice(0, 7)));
-    const m = matchMonth(state.items, around, { account: a.budgetAccount, ym: ui.ym, knownKeys });
+    const m = matchMonth(state.items, around, { account: a.budgetAccount, ym: ui.ym, knownKeys: kk });
     const ICON = { ok: '✅', diff: '⚠️', late: '⏳', missing: '❌', pending: '🕒' };
     const rowTxt = (r) => {
       const exp = r.amount < 0;
@@ -201,44 +268,146 @@ function planHtml(a) {
         <div><span class="muted small">Planlagt ind</span><b>${kr(m.planned.in, false)}</b></div>
         <div><span class="muted small">Faktisk ind</span><b class="${m.actual.in + 1 < m.planned.in ? 'warn' : 'pos'}">${kr(m.actual.in, false)}</b></div>
       </div>
-      <p class="small">${problems ? `⚠️ ${problems} ${problems === 1 ? 'ting' : 'ting'} passer ikke med budgettet i ${fmtYm(ui.ym, true)}.` : m.rows.length ? '✅ Alt, der er sket indtil nu, passer med budgettet.' : 'Ingen poster i budgettet på denne konto i måneden.'}</p>
+      <p class="small">${problems ? `⚠️ ${problems} ting passer ikke med budgettet i ${fmtYm(ui.ym, true)}.` : m.rows.length ? '✅ Alt, der er sket indtil nu, passer med budgettet.' : 'Ingen poster i budgettet på denne konto i måneden.'}</p>
       <ul class="pv-list">${m.rows.map((r) => `<li class="pv-${r.status}">
         <span class="pv-ico">${ICON[r.status]}</span>
         <span class="pv-main"><b>${esc(r.item.name)}</b><small>${rowTxt(r)}</small></span>
         <span class="pv-amt">${kr(Math.abs(r.amount), false)}${r.tx && r.status === 'diff' ? `<small>faktisk ${kr(Math.abs(r.tx.amount), false)}</small>` : ''}</span></li>`).join('')}</ul>
       ${m.unplanned.length ? `<details class="pv-more"><summary>Ikke i budgettet i ${fmtYm(ui.ym, true)} (${m.unplanned.length})</summary>
-        <ul class="tx-list">${m.unplanned.slice(0, 30).map(txRow).join('')}</ul></details>` : ''}
+        <ul class="tx-list">${m.unplanned.slice(0, 40).map((t) => txRow(t)).join('')}</ul></details>` : ''}
       ${m.internal.length ? `<p class="muted small">↔️ ${m.internal.length} overførsel${m.internal.length === 1 ? '' : 'er'} mellem jeres egne konti er genkendt og tæller ikke som udgift.</p>` : ''}`;
-
-    const sug = ui.ym === yms[0] ? suggestions(state.items, all, { account: a.budgetAccount, knownKeys }) : [];
+    const sug = ui.ym === yms[0] ? suggestions(state.items, all, { account: a.budgetAccount, knownKeys: kk }) : [];
     if (sug.length && canEdit()) {
       plan += `<div class="pv-sug"><h3>❓ Faste betalinger, der ikke står i budgettet</h3>
-        <ul class="pv-list">${sug.map((s, i) => `<li><span class="pv-ico">🔁</span><span class="pv-main"><b>${esc(s.name)}</b><small>set i ${s.seen} måneder · omkring den ${s.day}.</small></span>
-          <span class="pv-amt">${kr(s.amount, false)}<button class="btn small ghost" data-sug="${i}">＋ Tilføj</button></span></li>`).join('')}</ul></div>`;
+        <ul class="pv-list">${sug.map((x, i) => `<li><span class="pv-ico">🔁</span><span class="pv-main"><b>${esc(x.name)}</b><small>set i ${x.seen} måneder · omkring den ${x.day}.</small></span>
+          <span class="pv-amt">${kr(x.amount, false)}<button class="btn small ghost" data-sug="${i}">＋ Tilføj</button></span></li>`).join('')}</ul></div>`;
       ui.sug = sug;
     }
   }
-
-  const q = ui.q.trim().toLowerCase();
-  const list = monthTx.filter((t) => !q || `${t.text} ${t.party}`.toLowerCase().includes(q) || String(Math.abs(t.amount)).includes(q));
   return `<section class="glass card bank-plan">
     <div class="section-head"><h2>Plan og virkelighed · ${esc(a.name)} ${helpBtn('bankPlan')}</h2></div>
-    ${chips}
-    ${plan}
-  </section>
-  <section class="glass card">
-    <div class="section-head"><h2>Posteringer i ${fmtYm(ui.ym, true)}</h2><span class="muted small">${monthTx.length} stk.</span></div>
-    <input id="bk-q" type="search" placeholder="Søg i posteringer, fx Netto eller 129" value="${esc(ui.q)}" autocomplete="off" enterkeyhint="search">
-    ${list.length ? `<ul class="tx-list">${list.map(txRow).join('')}</ul>` : `<p class="muted">${monthTx.length ? 'Ingen posteringer passer til søgningen.' : 'Ingen posteringer i denne måned endnu.'}</p>`}
+    ${chips}${plan}
+    <p class="muted small">Alle posteringer, søgning og perioder finder du under <button class="link" data-bsub="tx">Posteringer</button>.</p>
   </section>`;
+}
 
-  function txRow(t) {
-    const internal = t.partyKey && knownKeys.includes(t.partyKey);
-    return `<li><span class="tx-date">${fmtDate(t.date).replace(/ \d{4}$/, '')}</span>
-      <span class="tx-text">${esc(t.text || t.party || '—')}${t.party && t.text && !t.text.toLowerCase().includes(t.party.toLowerCase()) ? `<small>${esc(t.party)}</small>` : ''}
-      ${internal ? '<small class="chip">↔️ mellem egne konti</small>' : ''}${t.status && t.status !== 'BOOK' ? '<small class="chip warn">venter</small>' : ''}</span>
-      <span class="tx-amt ${t.amount < 0 ? '' : 'pos'}">${t.amount < 0 ? '−' : '+'}${kr(Math.abs(t.amount), false)}</span></li>`;
-  }
+// ---------- Forbrug pr. kategori ----------
+function spendHtml() {
+  const yms = lastMonths(6);
+  if (!yms.includes(ui.spendYm)) ui.spendYm = yms[0];
+  const i = dateToIndex(new Date(`${ui.spendYm}-15`));
+  const prevYm = indexToYm(i - 1);
+  const all = useTx(ui.accounts, [...new Set([...yms, prevYm])]);
+  const chips = `<div class="av-chips">${yms.map((ym) => `<button class="av-chip ${ym === ui.spendYm ? 'on' : ''}" data-spend-ym="${ym}">${fmtYm(ym, true)}</button>`).join('')}</div>`;
+  if (!all) return `<section class="glass card"><h2>Forbrug</h2>${chips}<p class="muted">Henter posteringer …</p></section>`;
+  const rules = txRules();
+  const kk = knownKeys();
+  const cur = spendByCategory(all.filter((t) => t.date.startsWith(ui.spendYm)), rules, kk);
+  const prev = spendByCategory(all.filter((t) => t.date.startsWith(prevYm)), rules, kk);
+  const sm = monthSummary(cur, prev);
+  const pm = Object.fromEntries(prev.map((x) => [x.id, x.amount]));
+  const max = Math.max(1, ...cur.map((x) => x.amount));
+  const monthTx = all.filter((t) => t.date.startsWith(ui.spendYm));
+  const inn = monthTx.filter((t) => t.amount > 0 && !(t.partyKey && kk.includes(t.partyKey))).reduce((s2, t) => s2 + t.amount, 0);
+  const isCur = ui.spendYm === currentYm();
+  const summary = cur.length ? `<p class="spend-summary">I ${fmtYm(ui.spendYm, true)}${isCur ? ' (indtil nu)' : ''} brugte I <b>${kr(sm.total, false)}</b>${prev.length ? ` — ${sm.total > sm.prevTotal ? `${kr(sm.total - sm.prevTotal, false)} mere` : `${kr(sm.prevTotal - sm.total, false)} mindre`} end i ${fmtYm(prevYm, true)}` : ''}. Mest på <b>${esc(CAT[sm.top.id].name.toLowerCase())}</b> (${kr(sm.top.amount, false)}).
+      ${sm.changes.length ? `<br><span class="muted small">Største ændringer: ${sm.changes.map((c) => `${CAT[c.id].icon} ${esc(CAT[c.id].name)} ${c.diff > 0 ? '+' : '−'}${kr(Math.abs(c.diff), false)}`).join(' · ')}</span>` : ''}</p>` : '';
+  return `<section class="glass card spend">
+    <div class="section-head"><h2>Forbrug pr. kategori ${helpBtn('bankSpend')}</h2></div>
+    ${chips}
+    ${summary}
+    <div class="pv-sum two"><div><span class="muted small">Brugt</span><b class="neg">−${kr(sm.total, false)}</b></div><div><span class="muted small">Kommet ind</span><b class="pos">+${kr(inn, false)}</b></div></div>
+    ${cur.length ? `<ul class="cat-bars">${cur.map((c) => {
+      const d = c.amount - (pm[c.id] || 0);
+      const open = ui.openCat === c.id;
+      return `<li class="${open ? 'open' : ''}"><button type="button" class="cat-row" data-open-cat="${c.id}">
+          <span class="cb-name">${CAT[c.id].icon} ${esc(CAT[c.id].name)}</span>
+          <span class="cb-amt">${kr(c.amount, false)}${prev.length && Math.abs(d) >= 50 ? `<small class="${d > 0 ? 'neg' : 'pos'}">${d > 0 ? '↑' : '↓'} ${kr(Math.abs(d), false)}</small>` : ''}</span>
+          <span class="cb-bar"><i style="width:${Math.max(2, (c.amount / max) * 100).toFixed(1)}%"></i></span></button>
+        ${open ? `<ul class="tx-list">${monthTx.filter((t) => t.amount < 0 && categorize(t, rules, kk) === c.id).map((t) => txRow(t, { rules })).join('')}</ul>` : ''}</li>`;
+    }).join('')}</ul>` : '<p class="muted">Ingen udgifter i denne måned endnu.</p>'}
+    <p class="muted small">Kategorierne sættes automatisk ud fra butikkens navn. Er en forkert, så tryk på den — så husker appen det for alle posteringer fra samme sted.</p>
+  </section>`;
+}
+
+// ---------- Faste træk / abonnementer ----------
+function subsHtml() {
+  const all = useTx(ui.accounts, lastMonths(13));
+  if (!all) return '<section class="glass card"><h2>Faste træk</h2><p class="muted">Henter posteringer …</p></section>';
+  const list = recurring(all, knownKeys());
+  const active = list.filter((r) => !r.stale);
+  const itemTok = state.items.map((it) => tokens(`${it.name} ${it.supplier || ''}`));
+  const inBudget = (r) => { const t = tokens(r.key); return itemTok.some((it) => [...t].some((x) => it.has(x))); };
+  const FREQ = { 1: 'hver måned', 3: 'hvert kvartal', 6: 'hvert halve år', 12: 'hvert år' };
+  const total = active.reduce((s2, r) => s2 + r.monthly, 0);
+  ui.subs = list;
+  return `<section class="glass card">
+    <div class="section-head"><h2>Faste træk og abonnementer ${helpBtn('bankSubs')}</h2></div>
+    ${active.length ? `<p class="spend-summary">I har <b>${active.length}</b> faste træk, der tilsammen koster ca. <b>${kr(total, false)} om måneden</b> (${kr(total * 12, false)} om året).</p>` : '<p class="muted">Appen har ikke fundet faste træk endnu. Der skal typisk bruges 2–3 måneders posteringer.</p>'}
+    <ul class="pv-list subs-list">${list.map((r, i) => `<li class="${r.stale ? 'stale' : ''}">
+      <span class="pv-ico">${r.change > 0 ? '📈' : r.change < 0 ? '📉' : '🔁'}</span>
+      <span class="pv-main"><b>${esc(r.name)}</b><small>${FREQ[r.freq]} · sidst ${fmtDate(r.last)}${r.stale ? ' · ser ud til at være stoppet' : ''}${r.change ? ` · <span class="${r.change > 0 ? 'neg' : 'pos'}">${r.change > 0 ? 'steget' : 'faldet'} fra ${kr(r.prevAmount, false)}</span>` : ''}</small></span>
+      <span class="pv-amt">${kr(r.amount, false)}${r.freq > 1 ? `<small>= ${kr(r.monthly, false)}/md.</small>` : ''}
+        ${inBudget(r) ? '<small class="pos">✓ i budgettet</small>' : canEdit() && !r.stale ? `<button class="btn small ghost" data-add-sub="${i}">＋ Til budget</button>` : ''}</span></li>`).join('')}</ul>
+  </section>`;
+}
+
+// ---------- Posteringer: periode og søgning ----------
+const QUICK = [
+  { id: 'm1', label: 'Denne måned', range: () => [`${currentYm()}-01`, isoDate()] },
+  { id: 'm-1', label: 'Sidste måned', range: () => { const ym = indexToYm(nowI() - 1); return [`${ym}-01`, isoDate(new Date(Number(ym.slice(0, 4)), Number(ym.slice(5)), 0))]; } },
+  { id: 'm3', label: '3 mdr.', range: () => [isoDate(new Date(Date.now() - 91 * 864e5)), isoDate()] },
+  { id: 'y', label: 'I år', range: () => [`${new Date().getFullYear()}-01-01`, isoDate()] },
+  { id: 'm12', label: '12 mdr.', range: () => [isoDate(new Date(Date.now() - 365 * 864e5)), isoDate()] },
+];
+function txHtml() {
+  if (!ui.from || !ui.to) { const q0 = QUICK.find((x) => x.id === ui.quick) || QUICK[0]; [ui.from, ui.to] = q0.range(); }
+  const fi = dateToIndex(new Date(ui.from)), ti = dateToIndex(new Date(ui.to));
+  const yms = [];
+  for (let k = Math.max(fi, ti - 24); k <= ti; k++) yms.push(indexToYm(k));
+  const accs = ui.acc ? ui.accounts.filter((a) => a.id === ui.acc) : ui.accounts;
+  const all = useTx(accs, yms);
+  const oldest = accs.map((a) => a.dataFrom).filter(Boolean).sort()[0];
+  const ctrl = `<div class="av-chips">${QUICK.map((x) => `<button class="av-chip ${ui.quick === x.id ? 'on' : ''}" data-quick="${x.id}">${x.label}</button>`).join('')}</div>
+    <div class="tx-filters">
+      <label>Fra<input type="date" id="bk-from" value="${esc(ui.from)}"></label>
+      <label>Til<input type="date" id="bk-to" value="${esc(ui.to)}"></label>
+      <label>Konto<select id="bk-acc"><option value="">Alle konti</option>${ui.accounts.map((a) => `<option value="${a.id}" ${a.id === ui.acc ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
+    </div>
+    <input id="bk-q" type="search" placeholder="Søg, fx Netto, MobilePay eller 129" value="${esc(ui.q)}" autocomplete="off" enterkeyhint="search">`;
+  if (!all) return `<section class="glass card"><h2>Posteringer</h2>${ctrl}<p class="muted">Henter posteringer …</p></section>`;
+  const q = ui.q.trim().toLowerCase();
+  const rules = txRules();
+  const list = all.filter((t) => t.date >= ui.from && t.date <= ui.to)
+    .filter((t) => !q || `${t.text} ${t.party} ${CAT[categorize(t, rules, knownKeys())].name}`.toLowerCase().includes(q) || String(Math.abs(t.amount)).replace('.', ',').includes(q.replace('.', ',')));
+  const ud = list.filter((t) => t.amount < 0).reduce((s2, t) => s2 + Math.abs(t.amount), 0);
+  const ind = list.filter((t) => t.amount > 0).reduce((s2, t) => s2 + t.amount, 0);
+  return `<section class="glass card">
+    <div class="section-head"><h2>Posteringer</h2><span class="muted small">${list.length} stk.</span></div>
+    ${ctrl}
+    <div class="pv-sum three"><div><span class="muted small">Ud</span><b class="neg">−${kr(ud, false)}</b></div><div><span class="muted small">Ind</span><b class="pos">+${kr(ind, false)}</b></div><div><span class="muted small">I alt</span><b class="${ind - ud >= 0 ? 'pos' : 'neg'}">${ind - ud >= 0 ? '+' : '−'}${kr(Math.abs(ind - ud), false)}</b></div></div>
+    ${oldest ? `<p class="muted small">📅 Banken har givet posteringer tilbage til <b>${fmtDate(oldest)}</b>${oldest > ui.from ? ' — ældre posteringer findes ikke i appen' : ''}.</p>` : ''}
+    ${list.length ? `<ul class="tx-list">${list.slice(0, 400).map((t) => txRow(t, { showAcc: !ui.acc && ui.accounts.length > 1, rules })).join('')}</ul>${list.length > 400 ? '<p class="muted small">Viser de 400 nyeste. Gør perioden kortere for at se flere.</p>' : ''}` : `<p class="muted">${q ? 'Ingen posteringer passer til søgningen.' : 'Ingen posteringer i perioden.'}</p>`}
+  </section>`;
+}
+
+function findTx(id, acct) {
+  for (const v of ui.tx.values()) { const t = v?.find((x) => x.id === id && (!acct || x.acct === acct)); if (t) return t; }
+  return null;
+}
+function openCatPicker(t) {
+  const key = partyKeyOf(t);
+  const cur = categorize(t, txRules(), knownKeys());
+  const m = openModal({
+    title: 'Hvilken kategori?',
+    body: `<p class="muted small">${esc(t.text || t.party)} · ${kr(Math.abs(t.amount), false)}</p>
+      <div class="cat-grid">${CATEGORIES.filter((c) => c.id !== 'internal' && (t.amount < 0 ? !['income', 'moneyin'].includes(c.id) : ['income', 'moneyin', 'other'].includes(c.id))).map((c) => `<button type="button" class="cat-opt ${c.id === cur ? 'on' : ''}" data-c="${c.id}">${c.icon} ${esc(c.name)}</button>`).join('')}</div>
+      <p class="muted small">Gælder alle posteringer fra <b>${esc(key || t.text)}</b> — også fremover. Alle i budgettet ser den samme kategori.</p>`,
+    onOpen: (f) => f.querySelectorAll('[data-c]').forEach((b) => (b.onclick = async () => {
+      if (!canEdit()) { toast('Kun admin og redaktører kan ændre kategorier', 'error'); return; }
+      try { await saveTxRule(key, b.dataset.c); m.close(); toast(`${CAT[b.dataset.c].name} — husket for ${key}`); } catch (e) { errorToast(e); }
+    })),
+  });
 }
 
 function bind(root) {
@@ -256,6 +425,8 @@ function bind(root) {
       if (!(await confirmDialog(`Afbryd forbindelsen til <b>${esc(b.dataset.bank)}</b>? Appen henter så ikke mere fra banken. Det, der allerede er hentet, bliver liggende, indtil du fjerner kontiene.`, { okLabel: 'Afbryd' }))) return;
       try { await bankApi(`/session?id=${encodeURIComponent(b.dataset.id)}`, { method: 'DELETE' }); toast('Forbindelsen er afbrudt'); loadStatus(true); } catch (err) { errorToast(err); }
     }
+    const sb = e.target.closest('[data-bsub]');
+    if (sb) { ui.sub = sb.dataset.bsub; lsSet('bb:bankSub', ui.sub); window.scrollTo({ top: 0 }); emit(); }
     const pick = e.target.closest('[data-pick]');
     if (pick) { ui.sel = pick.dataset.pick; emit(); }
     const sy = e.target.closest('[data-sync]');
@@ -271,10 +442,24 @@ function bind(root) {
     }
     const ym = e.target.closest('[data-ym]');
     if (ym) { ui.ym = ym.dataset.ym; emit(); }
+    const sym = e.target.closest('[data-spend-ym]');
+    if (sym) { ui.spendYm = sym.dataset.spendYm; ui.openCat = null; emit(); }
+    const oc = e.target.closest('[data-open-cat]');
+    if (oc) { ui.openCat = ui.openCat === oc.dataset.openCat ? null : oc.dataset.openCat; emit(); }
+    const qk = e.target.closest('[data-quick]');
+    if (qk) { ui.quick = qk.dataset.quick; [ui.from, ui.to] = QUICK.find((x) => x.id === ui.quick).range(); emit(); }
+    const tc = e.target.closest('[data-tx-cat]');
+    if (tc) { const t = findTx(tc.dataset.txCat, tc.dataset.txAcct); if (t) openCatPicker(t); }
     const sg = e.target.closest('[data-sug]');
     if (sg) {
       const s = ui.sug[Number(sg.dataset.sug)];
       openItemModal({ type: 'expense', name: s.name, amount: s.amount, freq: 1, payDay: s.day, account: s.account, category: 'Andet', active: true, startMonth: currentYm(), visibleTo: defaultVisibleTo(), note: 'Fundet i banken' });
+    }
+    const as = e.target.closest('[data-add-sub]');
+    if (as) {
+      const r = ui.subs[Number(as.dataset.addSub)];
+      const acct = ui.accounts.find((a) => a.budgetAccount) || {};
+      openItemModal({ type: 'expense', name: r.name, amount: r.amount, freq: r.freq, payDay: Number(r.last.slice(8, 10)), startMonth: indexToYm(dateToIndex(new Date(r.last)) + r.freq), account: acct.budgetAccount || '', category: 'Abonnementer', active: true, visibleTo: defaultVisibleTo(), note: 'Fundet i banken' });
     }
   });
   w.addEventListener('change', async (e) => {
@@ -288,6 +473,13 @@ function bind(root) {
       const a = ui.accounts.find((x) => x.id === v.dataset.vis);
       try { await setVisibility(a, v.value === 'adults'); toast(v.value === 'adults' ? 'Alle voksne i budgettet kan nu se kontoen' : 'Kontoen er nu privat'); } catch (err) { errorToast(err); }
     }
+    if (e.target.id === 'bk-from' || e.target.id === 'bk-to') {
+      ui.quick = '';
+      ui[e.target.id === 'bk-from' ? 'from' : 'to'] = e.target.value || ui[e.target.id === 'bk-from' ? 'from' : 'to'];
+      if (ui.from > ui.to) [ui.from, ui.to] = [ui.to, ui.from];
+      emit();
+    }
+    if (e.target.id === 'bk-acc') { ui.acc = e.target.value; emit(); }
   });
   const q = w.querySelector('#bk-q');
   if (q) {

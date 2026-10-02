@@ -31,7 +31,7 @@ export async function logAction(action, entity, label, changes = null, budgetId 
   } catch (e) { console.warn('Log fejlede', e); }
 }
 
-const LOG_FIELDS = { name: 'Navn', amount: 'Beløb', freq: 'Hvor ofte', category: 'Kategori', who: 'Hvem', split: 'Fordeling', supplier: 'Leverandør', method: 'Metode', account: 'Konto', toAccount: 'Til konto', startMonth: 'Første betaling', payDay: 'Betalingsdag', endMonth: 'Slutter', note: 'Note', active: 'Aktiv', type: 'Type', store: 'Butik', what: 'Hvad', date: 'Dato', title: 'Titel', expiryDate: 'Udløb', yearlyPrice: 'Årlig pris' };
+const LOG_FIELDS = { name: 'Navn', amount: 'Beløb', freq: 'Hvor ofte', category: 'Kategori', who: 'Hvem', split: 'Fordeling', supplier: 'Leverandør', method: 'Metode', account: 'Konto', toAccount: 'Til konto', startMonth: 'Første betaling', payDay: 'Betalingsdag', endMonth: 'Slutter', note: 'Note', active: 'Aktiv', pause: 'Pause', type: 'Type', store: 'Butik', what: 'Hvad', date: 'Dato', title: 'Titel', expiryDate: 'Udløb', yearlyPrice: 'Årlig pris' };
 const fmtSplit = (sp) => (sp && typeof sp === 'object' ? Object.entries(sp).filter(([, p]) => p > 0).map(([n, p]) => `${n} ${p} %`).join(', ') : '');
 export function diffFields(oldObj = {}, newObj = {}) {
   const out = {};
@@ -40,7 +40,7 @@ export function diffFields(oldObj = {}, newObj = {}) {
     const a = oldObj[k] ?? '', b = newObj[k] ?? '';
     const same = typeof a === 'object' || typeof b === 'object' ? JSON.stringify(a || null) === JSON.stringify(b || null) : String(a) === String(b);
     if (same) continue;
-    const f = (v) => (k === 'freq' ? freqLabel(v) : k === 'split' ? fmtSplit(v) : v);
+    const f = (v) => (k === 'freq' ? freqLabel(v) : k === 'split' ? fmtSplit(v) : k === 'pause' ? (v?.from ? `${v.from} – ${v.to || 'indtil videre'}` : 'ingen') : k === 'payDay' && Number(v) >= 31 ? 'sidste dag' : v);
     out[LOG_FIELDS[k]] = { from: f(a), to: f(b) };
   }
   return Object.keys(out).length ? out : null;
