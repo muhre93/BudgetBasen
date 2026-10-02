@@ -903,3 +903,53 @@ body.simple .fab { display: none !important; }
 .bank-view .av-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
 .bank-view .av-chips::-webkit-scrollbar { display: none; }
 .bank-view .av-chip { flex-shrink: 0; }
+
+/* ---------- v8: foldbare kasser, kompakt bank ---------- */
+.fold > summary { display: flex; align-items: center; gap: .6rem; cursor: pointer; list-style: none; min-height: 32px; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::before { content: ''; width: 8px; height: 8px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform .15s; flex-shrink: 0; margin: 0 .2rem 0 .15rem; }
+.fold[open] > summary::before { transform: rotate(45deg); }
+.fold-title { font-weight: 800; font-size: 1.05rem; min-width: 0; }
+.fold-sum { margin-left: auto; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fold[open] > summary .fold-sum { display: none; }
+.fold-body { margin-top: .7rem; display: grid; gap: .6rem; min-width: 0; }
+.fold-body > * { min-width: 0; }
+.fold.card { padding-block: .75rem; }
+.bank-head { display: flex; align-items: center; gap: .6rem .8rem; flex-wrap: wrap; padding-block: .7rem; }
+.bank-head h2 { margin: 0; margin-right: auto; }
+.bank-accsel { display: flex; align-items: center; gap: .4rem; min-width: 0; flex: 0 1 260px; margin: 0; }
+.bank-accsel select { min-width: 0; width: 100%; min-height: 38px; padding-block: .3rem; }
+.acct-list { display: grid; }
+.acct-row { border-top: 1px solid var(--border); }
+.acct-row:first-child { border-top: 0; }
+.acct-row > summary { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .65rem .2rem; cursor: pointer; list-style: none; }
+.acct-row > summary::-webkit-details-marker { display: none; }
+.acct-row.sel > summary .ar-name b { color: var(--accent); }
+.ar-name { display: grid; gap: .05rem; min-width: 0; overflow-wrap: anywhere; }
+.ar-name .chip { margin-top: 0; }
+.ar-bal { font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ar-body { display: grid; gap: .55rem; padding: .2rem .2rem .9rem; }
+.ar-body .ba-fields { grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); }
+.alert-list li { padding: 0; overflow: hidden; }
+.alert-btn { display: flex; align-items: center; justify-content: space-between; gap: .6rem; width: 100%; padding: .6rem .8rem; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.alert-btn:hover { background: var(--panel-strong); }
+.alert-btn .go { font-size: 1.3rem; color: var(--muted); flex-shrink: 0; }
+.pv-list li:not(.plain) { padding: 0; }
+.pv-btn { display: flex; align-items: center; gap: .6rem; width: 100%; padding: .6rem .2rem; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.pv-btn:hover { background: var(--panel); }
+.period-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: .5rem; align-items: end; margin: .6rem 0 .4rem; }
+.period-form label { margin: 0; }
+@media (max-width: 560px) { .period-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .period-form button { grid-column: 1 / -1; } }
+/* Som i netbanken: grønt med plus ind, almindelig tekst med minus ud */
+.tx-amt.neg { color: var(--text); }
+/* Budget-siden: foldbare kasser, Tilføj for sig selv */
+.bfold > summary { padding: .35rem .2rem; }
+.bfold > .fold-body { margin-top: .35rem; }
+.bfold .fold-title { font-size: .98rem; }
+.search-fold > .toolbar { margin-top: .35rem; }
+.fold-sum.always { display: inline !important; color: var(--accent); }
+.add-row { display: flex; gap: .5rem; align-items: stretch; }
+.add-row [data-act=add] { flex: 1; justify-content: center; }
+@media (max-width: 899px) { .add-row [data-act=add] { display: none; } .add-row { justify-content: flex-end; } }
+.bfold .section-head, .bfold .section-title { margin-top: 0; }
+.ar-name .chip { justify-self: start; display: inline-flex; }

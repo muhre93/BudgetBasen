@@ -1,7 +1,7 @@
 // Simpel visning: kun det vigtigste i store tal, og "Tilføj" stiller ét spørgsmål ad gangen.
 // Bruger præcis de samme data som den udvidede visning.
 import { state, canEdit, lists, savingsAccounts, jointAccounts, defaultVisibleTo } from '../state.js';
-import { esc, kr, fmtDate, openModal, toast, parseAmount, currentYm, firstName } from '../ui.js';
+import { esc, kr, fmtDate, openModal, toast, parseAmount, currentYm, firstName, lsGet, lsSet } from '../ui.js';
 import {
   monthly, summarize, countsInBudget, dateToIndex, nextPayment, accountFunding, spendable, indexToYm, isTransfer, flowOf,
 } from '../calc.js';
@@ -18,12 +18,19 @@ export function renderSimple(root) {
   const today = new Date();
   const items = state.items;
   const sav = savingsAccounts();
-  const sum = summarize(items, today, { savingsAccounts: sav });
-  const out = sum.income - sum.left;
+  // Hvad skal de store tal vise? Én konto (typisk Budgetkonto) eller hele budgettet.
+  const inUse = [...new Set(items.flatMap((i) => [i.account, i.toAccount]).filter(Boolean))];
+  let acc = lsGet('bb:simpleAcc', null);
+  if (acc === null) acc = inUse.includes('Budgetkonto') ? 'Budgetkonto' : '';
+  if (acc && !inUse.includes(acc)) acc = '';
+  const full = summarize(items, today, { savingsAccounts: sav });
+  const one = acc ? summarize(items, today, { account: acc, savingsAccounts: sav }) : null;
+  const sum = acc ? { income: one.income, left: one.net } : full;
+  const out = acc ? one.expense : sum.income - sum.left;
   const light = sum.left < 0 ? '🔴' : sum.left < sum.income * 0.05 ? '🟡' : '🟢';
   const now = dateToIndex(today);
-  const funding = accountFunding(items, { savingsAccounts: sav, today }).filter((f) => f.status !== 'ok');
-  const balances = state.budget.settings?.balances || [];
+  const funding = accountFunding(items, { savingsAccounts: sav, today }).filter((f) => f.status !== 'ok' && (!acc || f.account === acc));
+  const balances = (state.budget.settings?.balances || []).filter((b) => !acc || b.account === acc);
 
   const rows = (list) => list.sort((a, b) => monthly(b) - monthly(a)).map((it) => {
     const np = nextPayment(it, today);
@@ -34,16 +41,18 @@ export function renderSimple(root) {
     </button>`;
   }).join('');
   const active = items.filter((i) => countsInBudget(i, now));
-  const inn = active.filter((i) => i.type === 'income');
-  const ud = active.filter((i) => i.type === 'expense' || (isTransfer(i) && flowOf(i, { savingsAccounts: sav }).bucket === 'saving'));
+  const inn = acc ? active.filter((i) => flowOf(i, { account: acc }).sign > 0) : active.filter((i) => i.type === 'income');
+  const ud = acc ? active.filter((i) => flowOf(i, { account: acc }).sign < 0)
+    : active.filter((i) => i.type === 'expense' || (isTransfer(i) && flowOf(i, { savingsAccounts: sav }).bucket === 'saving'));
 
   root.innerHTML = `<div class="view-wrap simple-view">
+    ${inUse.length > 1 ? `<div class="av-chips s-accs">${inUse.map((a) => `<button class="av-chip ${a === acc ? 'on' : ''}" data-s-acc="${esc(a)}">${esc(a)}</button>`).join('')}<button class="av-chip ${!acc ? 'on' : ''}" data-s-acc="">🏠 Hele budgettet</button></div>` : ''}
     <section class="s-hero glass">
       <div class="s-num"><span>Kommer ind</span><b class="pos">${kr(sum.income, false)}</b></div>
       <div class="s-op">−</div>
       <div class="s-num"><span>Går ud</span><b>${kr(out, false)}</b></div>
       <div class="s-op">=</div>
-      <div class="s-num big"><span>Tilbage hver måned ${helpBtn('left')}</span><b class="${sum.left >= 0 ? 'pos' : 'neg'}">${light} ${kr(sum.left, false)}</b></div>
+      <div class="s-num big"><span>${acc ? `Tilbage på ${esc(acc)} hver måned ${helpBtn('acctLeft')}` : `Tilbage hver måned ${helpBtn('left')}`}</span><b class="${sum.left >= 0 ? 'pos' : 'neg'}">${light} ${kr(sum.left, false)}</b></div>
     </section>
 
     ${funding.map((f) => `<div class="fund-line ${f.status === 'over' ? 'warn' : 'neg'}"><span class="fl-ico">${f.status === 'over' ? '🟡' : '🔴'}</span><span>${f.status === 'over'
@@ -68,6 +77,8 @@ export function renderSimple(root) {
   const w = root.firstElementChild;
   w.addEventListener('click', (e) => {
     if (e.target.closest('[data-s=add]')) openWizard();
+    const sa = e.target.closest('[data-s-acc]');
+    if (sa) { lsSet('bb:simpleAcc', sa.dataset.sAcc); renderSimple(root); }
     if (e.target.closest('[data-s=full]')) setPrefs({ simple: false });
     const r = e.target.closest('[data-item]');
     if (r) { const it = state.items.find((x) => x.id === r.dataset.item); if (it) openItemModal(it); }

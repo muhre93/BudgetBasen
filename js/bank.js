@@ -63,7 +63,7 @@ export async function linkAccounts(choices, { bank, validUntil }) {
     const linked = { [me]: { bank, validUntil: validUntil || null, at: isoDate() } };
     if (!hidden && (!snap || !snap.exists())) {
       await setDoc(ref, {
-        key: c.key, name: c.name, bank, masked: c.masked || '', currency: c.currency || 'DKK',
+        key: c.key, name: c.name, label: c.label || '', bank, masked: c.masked || '', currency: c.currency || 'DKK',
         owners: [me], ownerNames: { [me]: myName }, linked, joinHash: await joinHash(c.proof),
         visibleTo: c.shareAdults ? [me, ADULTS] : [me],
         budgetAccount: c.budgetAccount || '', months: [], createdAt: serverTimestamp(),
@@ -99,7 +99,16 @@ export async function linkAccounts(choices, { bank, validUntil }) {
 
 export async function setBudgetAccount(acct, budgetAccount) {
   await updateDoc(acctRef(acct.id), { budgetAccount });
+  if (!canEdit()) return;
+  if (budgetAccount && acct.balance != null) await queueBalance(budgetAccount, acct.balance, acct.id);
+  else await dropBalance(acct.id);
 }
+/** Giv bankkontoen dit eget navn (kun ejere). */
+export async function renameAccount(acct, label) {
+  await updateDoc(acctRef(acct.id), { label: String(label || '').trim().slice(0, 40) });
+}
+/** Det navn der vises: eget navn → budgetkonto + sidste cifre → bankens navn. */
+export const acctLabel = (a) => a?.label || (a?.budgetAccount ? `${a.budgetAccount}${a.masked ? ` ${a.masked.replace('•••• ', '··')}` : ''}` : `${a?.name || 'Konto'}${a?.masked ? ` ${a.masked.replace('•••• ', '··')}` : ''}`);
 
 /** Skift hvem der må se kontoen (og alle dens måneder). */
 export async function setVisibility(acct, shareAdults) {
@@ -116,6 +125,7 @@ export async function unlinkAccount(acct) {
   if ((acct.owners || []).length <= 1) {
     for (const ym of acct.months || []) await deleteDoc(txRef(acct.id, ym)).catch(() => {});
     await deleteDoc(acctRef(acct.id));
+    await dropBalance(acct.id);
     return 'deleted';
   }
   const owners = acct.owners.filter((u) => u !== me);
@@ -145,7 +155,7 @@ export async function loadMonths(acct, yms) {
 }
 export const clearTxCache = () => cache.clear();
 
-const TXV = 2; // version af posteringsformatet — ved ny version hentes alt igen (fx rettet fortegn)
+const TXV = 3; // version af posteringsformatet — ved ny version hentes alt igen (fx rettet fortegn)
 
 /** Hent nyt fra banken for én konto og gem det. Returnerer { balance, count }. */
 export async function syncAccount(acct) {
@@ -188,22 +198,39 @@ export async function syncAccount(acct) {
     [`linked.${me}.validUntil`]: r.validUntil || null,
   });
   // Saldoen bruges automatisk i budgettet ("Du kan bruge …" og Likviditet)
-  if (acct.budgetAccount && bal.amount != null && canEdit()) await queueBalance(acct.budgetAccount, bal.amount);
+  if (acct.budgetAccount && bal.amount != null && canEdit()) await queueBalance(acct.budgetAccount, bal.amount, acct.id);
   return { balance: bal.amount, count: (r.transactions || []).length };
 }
 
 // Flere konti kan hentes samtidig — saldoerne skrives én ad gangen med friske data, så de ikke overskriver hinanden.
+// Hører flere bankkonti til samme konto i budgettet, lægges de sammen (parts: { banknøgle: beløb }).
 let balQueue = Promise.resolve();
-function queueBalance(account, amount) {
+function queueBalance(account, amount, key) {
   balQueue = balQueue.then(async () => {
     const snap = await getDoc(doc(db, 'budgets', state.budgetId));
     const cur = snap.exists() ? snap.data().settings?.balances || [] : state.budget.settings?.balances || [];
-    const old = cur.find((b) => b.account === account);
-    if (old && old.amount === amount && old.date === isoDate() && old.source === 'bank') return;
-    await saveBalances([...cur.filter((b) => b.account !== account), { account, amount, date: isoDate(), source: 'bank' }]);
+    let out = cur.map((b) => ({ ...b }));
+    // fjern denne bankkonto fra andre budgetkonti (hvis den er flyttet)
+    for (const b of out) {
+      if (b.parts && key in b.parts && b.account !== account) {
+        delete b.parts[key];
+        b.amount = Math.round(Object.values(b.parts).reduce((x, y) => x + y, 0) * 100) / 100;
+      }
+    }
+    out = out.filter((b) => !(b.source === 'bank' && b.parts && !Object.keys(b.parts).length));
+    if (account && amount != null) {
+      const old = out.find((b) => b.account === account);
+      const parts = { ...(old?.source === 'bank' ? old.parts || {} : {}), [key]: amount };
+      const total = Math.round(Object.values(parts).reduce((x, y) => x + y, 0) * 100) / 100;
+      out = [...out.filter((b) => b.account !== account), { account, amount: total, date: isoDate(), source: 'bank', parts }];
+    }
+    if (JSON.stringify(out) === JSON.stringify(cur)) return;
+    await saveBalances(out, { silent: true }); // banksaldo skifter hele tiden — fylder ikke loggen
   }).catch((e) => console.warn('saldo', e));
   return balQueue;
 }
+/** Fjern en bankkontos saldo fra budgettet (når den fjernes eller ikke længere hører til en budgetkonto). */
+export const dropBalance = (key) => (canEdit() ? queueBalance('', null, key) : Promise.resolve());
 
 /** Egne kategori-regler: "posteringer fra X er altid Y". Gemmes på budgettet. */
 export const ruleKey = (k) => String(k).replace(/[^a-zæøåäöü]+/g, '_').slice(0, 60);

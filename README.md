@@ -134,6 +134,16 @@ Uden disse virker appen stadig — så står der "Egen mail" ved invitationen, s
 - **Likviditet** simulerer saldoen betaling for betaling — ikke bare månedstotaler — så man ser hvis kontoen går i minus den 1., selvom lønnen kommer den 25. Beregnes i hele øre (ingen afrundingsfejl). Samme dag: indtægter før udgifter (som bankerne gør med faste overførsler og Betalingsservice). Betalinger med betalingsdag i dag eller tidligere i indeværende måned regnes som allerede trukket.
 - **Budgetkonto "Bør stå":** for hver udgift på kontoen: beløb × (frekvens − måneder til næste betaling) ÷ frekvens. Forudsætter at den månedlige overførsel lander den 1. Eksempel: årlig forsikring på 1.200 kr. betalt i marts → i september bør der stå 600 kr. Appen viser overskud/manko og den anbefalede månedlige overførsel.
 
+## Nyt i version 8
+- **Bank: fortegn rettet rigtigt.** Udgifter markeres af banken med `DBIT` (koden var skrevet forkert). Første hentning efter opdateringen henter alt igen. Ind = grønt med plus, ud = almindelig tekst med minus.
+- **Bank-fanen:** kontovælger øverst (alle konti eller én) gælder alle under-faner · egne navne på bankkonti · kompakt kontoliste · alle kasser kan foldes sammen · varsler siger hvad det drejer sig om og hopper til posten · periode (fra–til + "Vis perioden") gælder både Forbrug og Posteringer.
+- **Flere bankkonti på samme budgetkonto lægges sammen** i saldoen (`balances[].parts`).
+- **Appen husker** valgt konto på Budget, under-fane, konto og periode i Bank samt hvad der er foldet sammen — også efter genindlæsning.
+- **Budget-siden:** alle kasser har en pil og kan foldes sammen (erstatter ✕). "Tilføj" står for sig selv, "⋯ Mere" samler Hent/del, Sammenlign og Gem version, og Søg og filter er foldet sammen fra start.
+- **"Hvem betaler hvad"** skjuler ikke længere sig selv.
+- **Simpel visning:** vælg øverst mellem en konto (Budgetkonto som standard) og hele budgettet.
+- **Opdatering:** ny Worker-kode + upload af alle filer. Ingen nye Firestore-regler.
+
 ## Nyt i version 7
 - **"Tilbage af lønnen"** = løn minus alt, der faktisk trækkes eller overføres fra lønkontoen. Overføres der for lidt til fx Budgetkontoen, står pengene stadig på lønkontoen — og Budgetkontoens manko vises med rødt for sig (også på person-kortene: "Mangler at overføre").
 - **Bank:** rettet fortegn for banker, der skriver minus foran beløbet i stedet for ind/ud-markering (fx Sparekassen Danmark). Kontoen selv regnes ikke længere som "mellem egne konti". Ud = rødt med minus, ind = grønt med plus. Første hentning efter opdateringen henter alt igen (op til 12 mdr.).

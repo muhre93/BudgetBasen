@@ -84,7 +84,7 @@ export async function updateBudget(patch, logLabel = null) {
   if (logLabel) logAction('update', 'settings', logLabel);
 }
 
-export async function saveBalances(balances) {
+export async function saveBalances(balances, { silent = false } = {}) {
   const old = state.budget.settings?.balances || [];
   await updateDoc(budgetRef(), { 'settings.balances': balances, updatedAt: serverTimestamp() });
   const changes = {};
@@ -92,7 +92,7 @@ export async function saveBalances(balances) {
     const o = old.find((x) => x.account === b.account);
     if (!o || o.amount !== b.amount) changes[b.account] = { from: o?.amount ?? '', to: b.amount };
   }
-  if (Object.keys(changes).length) logAction('update', 'balance', 'Kontosaldo', changes);
+  if (Object.keys(changes).length && !silent) logAction('update', 'balance', 'Kontosaldo', changes);
 }
 
 export async function addListValue(key, value) {

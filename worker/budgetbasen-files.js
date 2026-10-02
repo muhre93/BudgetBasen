@@ -510,7 +510,9 @@ const accountKey = (env, num) => hmacHex(env, 'acct', num, 12);
 async function normalizeTx(env, t, ownKey = '') {
   const raw = Number(t.transaction_amount?.amount || 0);
   // Nogle banker (fx flere sparekasser) markerer ikke ind/ud, men sætter minus foran beløbet.
-  const debit = t.credit_debit_indicator ? t.credit_debit_indicator === 'DBDT' : raw < 0;
+  // ISO 20022: DBIT = ud, CRDT = ind. Mangler markeringen, bruges fortegnet.
+  const ind = String(t.credit_debit_indicator || '').toUpperCase();
+  const debit = ind === 'DBIT' || ind === 'DBDT' ? true : ind === 'CRDT' ? raw < 0 : raw < 0;
   const amt = Math.abs(raw);
   const party = debit ? t.creditor : t.debtor;
   const partyAcc = debit ? t.creditor_account : t.debtor_account;

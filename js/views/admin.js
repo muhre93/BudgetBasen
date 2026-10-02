@@ -141,7 +141,7 @@ function look(el, root) {
       </div>
       <p class="muted small">Indstillingerne gælder kun for dig og følger med til dine andre enheder. De andre i budgettet vælger selv.</p>
     </section>
-    ${(p.hidden || []).length ? `<section class="glass card">
+    ${false ? `<section class="glass card">
       <h2>Skjulte bokse på budgetsiden</h2>
       <ul class="rows hidden-boxes">${p.hidden.map((h) => `<li><span>${esc({ funding: 'Status for overførsler til konti (gul/rød boks)', persons: 'Hvem betaler hvad' }[h] || h)}</span><button class="btn small ghost" data-unhide="${esc(h)}">Vis igen</button></li>`).join('')}</ul>
     </section>` : ''}`;

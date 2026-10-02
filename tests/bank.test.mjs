@@ -33,7 +33,7 @@ const PEM8 = app.privateKey.export({ type: 'pkcs8', format: 'pem' });
 const PEM1 = app.privateKey.export({ type: 'pkcs1', format: 'pem' });
 const calls = [];
 const TX = [
-  { entry_reference: 'r1', transaction_amount: { amount: '21963.00', currency: 'DKK' }, credit_debit_indicator: 'DBDT', booking_date: '2026-09-15', creditor: { name: 'Totalkredit' }, remittance_information: ['Totalkredit termin'] },
+  { entry_reference: 'r1', transaction_amount: { amount: '21963.00', currency: 'DKK' }, credit_debit_indicator: 'DBIT', booking_date: '2026-09-15', creditor: { name: 'Totalkredit' }, remittance_information: ['Totalkredit termin'] },
   { entry_reference: 'r2', transaction_amount: { amount: '23000.00', currency: 'DKK' }, credit_debit_indicator: 'CRDT', booking_date: '2026-09-30', debtor: { name: 'Lasse' }, debtor_account: { iban: 'DK5000400440116243' } },
   // Sparekasse-stil: ingen ind/ud-markering, minus foran beløbet, og kontoen selv står som "debtor"
   { entry_reference: 'r3', transaction_amount: { amount: '-161.00', currency: 'DKK' }, booking_date: '2026-09-21', creditor: { name: 'NETTO AALBORGVEJ' }, debtor: { name: 'Mike' }, debtor_account: { iban: 'DK12 3456 7890 1234 56' } },

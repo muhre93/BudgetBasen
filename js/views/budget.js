@@ -23,7 +23,10 @@ import { openShareDialog } from './share.js';
 import { openCompareDialog, openSaveSnapshot } from './compare.js';
 
 const EMPTY_F = { type: 'all', status: 'active', person: '', cat: '', acc: '', freq: '', vis: '', month: '', min: '', max: '' };
-const ui = { q: '', f: { ...EMPTY_F }, filtersOpen: false, view: '', collapsed: new Set(lsGet('bb:collapsed', [])) };
+const bfold = lsGet('bb:budgetFold', {});
+const bOpen = (id, def = true) => (id in bfold ? bfold[id] : def);
+const bsec = (id, title, inner, def = true) => `<details class="fold bfold" data-bfold="${id}" ${bOpen(id, def) ? 'open' : ''}><summary><span class="fold-title">${title}</span><span class="fold-sum muted small" data-bsum="${id}"></span></summary><div class="fold-body">${inner}</div></details>`;
+const ui = { q: '', f: { ...EMPTY_F }, filtersOpen: false, view: lsGet('bb:bView', ''), collapsed: new Set(lsGet('bb:collapsed', [])) };
 const viewOpts = () => ({ account: ui.view || null, savingsAccounts: savingsAccounts() });
 
 const ICON = {
@@ -52,10 +55,15 @@ function buildShell(root, L, key) {
     <div id="b-simple-hint">${!lsGet('bb:simpleHint', false) && feature('simple') ? `<div class="simple-hint glass"><span>✨ <b>Er det lidt meget på én gang?</b> Prøv simpel visning — kun de vigtigste tal, og "Tilføj" spørger om én ting ad gangen. Du kan altid skifte med knappen øverst.</span>
       <span class="btn-row"><button class="btn small primary" data-act="try-simple">Prøv simpel visning</button><button class="hide-x" data-act="no-simple" aria-label="Luk">✕</button></span></div>` : ''}</div>
     <section class="acct-view" id="b-view"></section>
-    <section class="kpis" id="b-kpis"></section>
-    <section class="funding" id="b-funding"></section>
-    <section id="b-persons"></section>
-    <section id="b-balances"></section>
+    ${bsec('kpis', '📊 De store tal', '<section class="kpis" id="b-kpis"></section>')}
+    ${bsec('funding', '🚦 Passer overførslerne?', '<section class="funding" id="b-funding"></section>')}
+    ${bsec('persons', `👥 Hvem betaler hvad ${helpBtn('persons')}`, '<section id="b-persons"></section>')}
+    ${bsec('balances', `🏦 Hvad står der på kontoen? ${helpBtn('budgetkonto')}`, '<section id="b-balances"></section>')}
+    <div class="add-row">
+      ${canEdit() ? `<button class="btn primary big" data-act="add">${ICON.plus}Tilføj indtægt, udgift eller overførsel</button>` : ''}
+      <button class="btn ghost" data-act="more" title="Sammenlign, gem version, hent eller del">⋯ Mere</button>
+    </div>
+    <details class="fold bfold search-fold" data-bfold="search" ${bOpen('search', false) ? 'open' : ''}><summary><span class="fold-title">🔍 Søg og filter</span><span class="fold-sum muted small" data-bsum="search"></span></summary>
     <section class="toolbar glass">
       <div class="toolbar-row">
         <input id="b-q" type="search" placeholder="Søg efter en post, fx husleje…" value="${esc(ui.q)}" enterkeyhint="search" autocomplete="off">
@@ -74,17 +82,11 @@ function buildShell(root, L, key) {
         <label>Pr. måned til<input data-f="max" inputmode="decimal" placeholder="ingen grænse"></label>
         <div class="filter-foot"><button type="button" class="btn small ghost" id="b-freset">Nulstil filtre</button></div>
       </div>
-      <div class="toolbar-row actions">
-        ${canEdit() ? `<button class="btn primary" data-act="add">${ICON.plus}Tilføj</button>` : ''}
-        <span class="spacer"></span>
-        <button class="btn ghost" data-act="compare" title="Se hvad der har ændret sig">${ICON.compare}<span class="hide-sm">Sammenlign</span></button>
-        ${canEdit() ? `<button class="btn ghost" data-act="snapshot" title="Gem hvordan budgettet ser ud lige nu">${ICON.save}<span class="hide-sm">Gem version</span></button>` : ''}
-        <button class="btn ghost" data-act="share" title="Hent som PDF/Excel, udskriv eller del med banken">${ICON.share}Hent / del</button>
-      </div>
-    </section>
+    </section></details>
     <div id="b-results"></div>
     ${canEdit() ? `<button class="fab" data-act="add" aria-label="Tilføj indtægt, udgift eller overførsel">${ICON.plus}<span>Tilføj</span></button>` : ''}</div>`;
   const w = root.firstElementChild;
+  w.addEventListener('toggle', (e) => { const id = e.target.dataset?.bfold; if (id) { bfold[id] = e.target.open; lsSet('bb:budgetFold', bfold); } }, true);
 
   // Filterfelter: sæt værdier og lyt — opdaterer kun resultatet
   root.querySelectorAll('[data-f]').forEach((el) => {
@@ -106,7 +108,8 @@ function buildShell(root, L, key) {
     if (act === 'add-income') openItemModal(null, 'income');
     if (act === 'add-transfer') openItemModal(null, 'transfer');
     const v = e.target.closest('[data-view-acc]');
-    if (v) { ui.view = v.dataset.viewAcc; update(root); }
+    if (v) { ui.view = v.dataset.viewAcc; lsSet('bb:bView', ui.view); update(root); }
+    if (act === 'more') openMoreMenu();
     if (act === 'share') openShareDialog();
     if (act === 'compare') openCompareDialog();
     if (act === 'snapshot') openSaveSnapshot();
@@ -146,12 +149,12 @@ function viewAccounts(L) {
 /** Rækkefølge og skjulte kasser fra Ejer-admin. */
 function applyLayout(root) {
   const { order } = getConfig().layout;
-  const hidden = [...getConfig().layout.hidden, ...(getPrefs().hidden || [])];
+  const hidden = getConfig().layout.hidden;
   const w = root.firstElementChild;
   const listPos = order.indexOf('list');
   for (const el of w.children) {
     if (el.id === 'b-simple-hint') { el.style.order = '-1'; continue; }
-    const sec = SECTIONS.find((x) => x.el && el.matches(x.el));
+    const sec = SECTIONS.find((x) => x.el && (el.matches(x.el) || el.querySelector(x.el)));
     const id = sec ? sec.id : 'list';
     el.style.order = String(id === 'list' ? listPos : order.indexOf(id));
     el.classList.toggle('layout-hidden', hidden.includes(id));
@@ -201,9 +204,22 @@ function update(root) {
       ${kpi('Står på kontoen nu', bal ? kr(bal.amount) : '–', 'acct', 'budgetkonto', bal ? `skrevet ${fmtDate(bal.date)}` : 'skriv saldoen nedenfor')}`;
   }
   const funding = accountFunding(allItems, { savingsAccounts: savingsAccounts(), today }).filter((f) => !ui.view || f.account === ui.view);
-  q('#b-funding').innerHTML = funding.length ? `<div class="fund-wrap">${funding.map(fundingLine).join('')}${hideBtn('funding')}</div>` : '';
+  q('#b-funding').innerHTML = funding.map(fundingLine).join('');
   q('#b-persons').innerHTML = ui.view ? '' : personsHtml(allItems, L);
   q('#b-balances').innerHTML = balancesHtml(allItems, today, ui.view);
+  // Overskrifterne viser det vigtigste, når kassen er foldet sammen — og tomme kasser skjules
+  const bsum = (id, txt) => { const d = root.querySelector(`[data-bfold="${id}"]`); d.querySelector('[data-bsum]').innerHTML = txt; };
+  const bhide = (id, empty) => root.querySelector(`[data-bfold="${id}"]`).classList.toggle('hidden', empty);
+  bsum('kpis', ui.view ? `Tilbage på ${esc(ui.view)}: <b>${kr(sum.net, false)}</b>` : `Tilbage af lønnen: <b>${kr(sum.left, false)}</b>`);
+  bhide('funding', !funding.length);
+  bsum('funding', funding.map((f) => (f.status === 'ok' ? `🟢 ${esc(f.account)} passer` : f.status === 'over' ? `🟡 ${esc(f.account)}: ${kr(f.diff, false)} for meget` : `🔴 ${esc(f.account)} mangler ${kr(-f.diff, false)}`)).join(' · '));
+  bhide('persons', !q('#b-persons').innerHTML.trim());
+  bsum('persons', L.people.filter((p) => p !== 'Fælles').map(esc).join(', '));
+  const bl = (state.budget.settings?.balances || []).filter((b) => !ui.view || b.account === ui.view);
+  bsum('balances', bl.length ? bl.slice(0, 2).map((b) => `${esc(b.account)} <b>${kr(b.amount, false)}</b>`).join(' · ') + (bl.length > 2 ? ` · +${bl.length - 2}` : '') : 'ikke skrevet endnu');
+  const nact = activeFilterCount() + (ui.q.trim() ? 1 : 0);
+  bsum('search', nact ? `<b>${nact} aktiv${nact === 1 ? 't' : 'e'}</b> — listen er filtreret` : '');
+  root.querySelector('[data-bsum="search"]').classList.toggle('always', nact > 0);
 
   const active = activeFilterCount();
   const badge = q('#b-fcount');
@@ -247,9 +263,6 @@ function personsHtml(items, L) {
   const js = state.budget.settings?.jointSplit;
   const showJoint = state.budget.settings?.showJoint !== false;
   const s = personSummary(items, { jointAccounts: showJoint ? jointAccounts() : [], jointSplit: js, people, savingsAccounts: savingsAccounts() });
-  // Kun én person med penge ind eller ud, og intet fælles → boksen giver ingen mening
-  const activePeople = s.persons.filter((p) => p.income > 0.5 || p.totalOut > 0.5 || p.saving > 0.5);
-  if (activePeople.length <= 1 && s.joint.expense + s.joint.saving < 0.5) return '';
   const cards = s.persons.map((p) => `
     <button class="person-card glass" data-person-card="${esc(p.name)}" title="Vis ${esc(p.name)}s poster">
       <div class="pc-name">${esc(p.name)}</div>
@@ -275,8 +288,8 @@ function personsHtml(items, L) {
       </div>
       ${canEdit() ? '<button class="btn small ghost" data-act="joint">Ret fordeling / fælleskonti</button>' : ''}
     </div>`;
-  return `<div class="section-title"><h2>Hvem betaler hvad ${helpBtn('persons')}</h2>
-      <span class="st-actions"><span class="muted small">Tryk på en person for at se deres poster</span>${!showJoint && canEdit() ? '<button class="btn small ghost" data-act="joint">Fælles-indstillinger</button>' : ''}${hideBtn('persons')}</span></div>
+  return `<div class="section-title"><span class="muted small">Tryk på en person for at se deres poster</span>
+      <span class="st-actions">${!showJoint && canEdit() ? '<button class="btn small ghost" data-act="joint">Fælles-indstillinger</button>' : ''}</span></div>
     <div class="person-grid">${cards}${showJoint ? joint : ''}</div>`;
 }
 
@@ -340,7 +353,7 @@ function balancesHtml(items, today, only = '') {
   }).join('');
   return `<section class="balances glass">
     <div class="section-head">
-      <h2>Hvad står der på kontoen? ${helpBtn('budgetkonto')}</h2>
+      <span class="muted small">Saldoen fra netbanken — eller hentet automatisk fra banken</span>
       ${canEdit() ? '<button class="btn small ghost" data-act="balances">Skriv saldo</button>' : ''}
     </div>
     ${balances.length ? rows : '<p class="muted">Skriv hvad der står på kontoen i netbanken, så kan appen fortælle hvor meget I kan bruge uden at mangle til regningerne.</p>'}
@@ -470,6 +483,22 @@ export function openAddChooser() {
       <button type="button" class="add-opt transfer" data-t="transfer"><span class="ao-ico">🔁</span><span><b>Opsparing eller overførsel</b><small>Penge du flytter mellem dine egne konti — fx fast opsparing eller til budgetkontoen</small></span></button>
     </div>`,
     onOpen: (f) => f.querySelectorAll('[data-t]').forEach((b) => (b.onclick = () => { m.close(); setTimeout(() => openItemModal(null, b.dataset.t), 180); })),
+  });
+}
+function openMoreMenu() {
+  const m = openModal({
+    title: 'Mere',
+    body: `<div class="add-choices">
+      <button type="button" class="add-opt" data-m="share"><span class="ao-ico">📤</span><span><b>Hent eller del</b><small>PDF eller Excel — til at printe, gemme eller sende til banken</small></span></button>
+      <button type="button" class="add-opt" data-m="compare"><span class="ao-ico">🔀</span><span><b>Sammenlign</b><small>Se hvad der har ændret sig siden en tidligere version</small></span></button>
+      ${canEdit() ? '<button type="button" class="add-opt" data-m="snapshot"><span class="ao-ico">💾</span><span><b>Gem version</b><small>Gem hvordan budgettet ser ud lige nu</small></span></button>' : ''}
+    </div>`,
+    onOpen: (f) => {
+      f.querySelector('[data-m=share]').classList.toggle('hidden', !feature('export'));
+      f.querySelector('[data-m=compare]').classList.toggle('hidden', !feature('compare'));
+      f.querySelector('[data-m=snapshot]')?.classList.toggle('hidden', !feature('compare'));
+      f.querySelectorAll('[data-m]').forEach((b) => (b.onclick = () => { m.close(); setTimeout(() => ({ share: openShareDialog, compare: openCompareDialog, snapshot: openSaveSnapshot })[b.dataset.m](), 180); }));
+    },
   });
 }
 const hideBtn = (id) => `<button type="button" class="hide-x" data-hide-box="${id}" title="Skjul denne boks (kun for dig — kan vises igen under Admin → Udseende)" aria-label="Skjul boksen">✕</button>`;
